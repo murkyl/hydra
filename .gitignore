@@ -1,10 +1,11 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
-*.py[cod]
+#*.py[cod]
+*.py[co]
 *$py.class
 
 # C extensions
-*.so
+#*.so
 
 # Distribution / packaging
 .Python
@@ -14,11 +15,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+#lib/
+#lib64/
 parts/
 sdist/
-test/data/
 var/
 wheels/
 *.egg-info/
@@ -47,7 +47,11 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
-
+test/data/
+test/torture/Big5*
+test/torture/EUC-KR*
+test/torture/GreaterThan*
+test/torture/ShiftJIS*
 # Translations
 *.mo
 *.pot
