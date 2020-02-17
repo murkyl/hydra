@@ -2,25 +2,6 @@
 """
 Module description here
 """
-
-import os
-import sys
-import multiprocessing
-import time
-import logging
-import socket
-import select
-try:
-   import cPickle as pickle
-except:
-   import pickle
-import zlib
-from collections import deque
-import HydraClient
-import HydraWorker
-import HydraUtils
-
-
 __title__ = "HydraServer"
 __version__ = "1.0.0"
 __all__ = ["HydraServer", "HydraServerProcess"]
@@ -43,37 +24,59 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
 SOFTWARE."""
+import os
+import sys
+import multiprocessing
+import time
+import logging
+import socket
+import errno
+import select
+import struct
+import uuid
+try:
+   import cPickle as pickle
+except:
+   import pickle
+import zlib
+from collections import deque
+import HydraClient
+import HydraWorker
+import HydraUtils
+
 
 class HydraServer(object):
-  def __init__(self):
+  def __init__(self, args={}):
     """
     Fill in docstring
     """
+    self.args = dict(args)
     self.log = logging.getLogger(__name__)
+    self.heartbeat_interval = args.get('heartbeat_interval', HydraUtils.HEARTBEAT_INTERVAL)                   # Seconds for each heartbeat
+    self.idle_shutdown_interval = args.get('idle_shutdown_interval', HydraUtils.IDLE_SHUTDOWN_THRESHOLD)      # Number of idle heartbeats before forcing a pending shutdown
+    self.dirs_per_idle_client = args.get('dirs_per_idle_client', HydraUtils.DIRS_PER_IDLE_CLIENT)
+    self.select_poll_interval = args.get('select_poll_interval', HydraUtils.SELECT_POLL_INTERVAL)
+    self.stats_heartbeat_interval = args.get('stats_heatbeat_interval', HydraUtils.STATS_HEARTBEAT_INTERVAL)  # Number of heartbeat intervals per client stat update
     self.heartbeat_count = 1
-    self.heartbeat_interval = HydraUtils.HEART_BEAT_INTERVAL                    # Seconds for each heartbeat
-    self.max_shutdown_idle_interval = HydraUtils.IDLE_SHUTDOWN_THRESHOLD        # Number of idle heartbeats before forcing a pending shutdown
-    self.dirs_per_idle_client = HydraUtils.DIRS_PER_IDLE_CLIENT
-    self.select_poll_interval = HydraUtils.SELECT_POLL_INTERVAL
-    self.stats_heartbeat_interval = HydraUtils.STATS_HEARTBEAT_INTERVAL         # Number of heartbeat intervals per worker stat update
     self.num_clients = 0
-    self.clients = {}                                                           # Connected client list
-    self.shutdown_clients = {}
+    self.clients = {}                 # Connected client list
+    self.shutdown_clients = {}        # List of clients that have been shutdown. Used for statistics
+    self.stats = {}
     self.state = 'initializing'
     self.work_queue = deque()
-    self.stats = {}
     self.init_stats(self.stats)
     
-    # Variables dealing with server and worker communication
+    # Variables dealing with server and client communication
     self.server = None
-    self.server_handle = None
-    self.server_listen_addr = HydraUtils.DEFAULT_LISTEN_ADDR
-    self.server_listen_port = HydraUtils.DEFAULT_LISTEN_PORT
-    # Used instead to send and receive commands from the Web UI
-    self.server_pipe, self.api_pipe = multiprocessing.Pipe()
-    # Sockets from which we expect to read from through a select call
-    self.inputs = []
-    self.inputs.append(self.server_pipe)
+    self.server_listen_addr = args.get('server_listen_addr', HydraUtils.DEFAULT_LISTEN_ADDR)
+    self.server_listen_port = args.get('server_listen_port', HydraUtils.DEFAULT_LISTEN_PORT)
+    self.loopback_addr = args.get('loopback_addr', '127.0.0.1')
+    self.loopback_port = args.get('loopback_port', 0)
+    self.svr_side_conn = None         # Sockets used to communicate between the server and UI
+    self.ui_side_conn = None          # Sockets used to communicate between the server and UI
+
+    self.inputs = []                  # Sockets from which we expect to read from through a select call
+    self._connect_ui()
     
   def init_stats(self, stat_state):
     """
@@ -89,7 +92,7 @@ class HydraServer(object):
     """
     This method is called to consolidate all the client stats into a single
     coherent stats object.
-    This method can overridden in order to handle custom statistics
+    This method can be overridden in order to handle custom statistics
     """
     try:
       self.init_stats(self.stats)
@@ -117,7 +120,7 @@ class HydraServer(object):
   def handle_extended_server_cmd(self, cmd):
     """
     Called by the main loop when an unknown command is found
-    This can be used to support custom commands from a HydraClient without
+    This can be used to support custom commands from without
     having to re-write the operation parser. This can be overridden as necessary
     when subclassing :class:`HydraServer <multiprocessing.Process>`.
     
@@ -125,6 +128,41 @@ class HydraServer(object):
     Return False if the command was not handled. This is the default.
     """
     return False
+    
+  def fileno(self):
+    """
+    Fill in docstring
+    """
+    if self.ui_side_conn:
+      return self.ui_side_conn.fileno()
+    return None
+    
+  def recv(self, timeout=-1):
+    """
+    Fill in docstring
+    """
+    if timeout >= 0:
+      readable, _, _ = select.select([self.ui_side_conn], [], [], timeout)
+      if not readable:
+        return False
+    msg_size = self.ui_side_conn.recv(4)
+    if len(msg_size) != 4:
+      return b''
+    data_len = struct.unpack('!L', msg_size)[0]
+    data = HydraUtils.socket_recv(self.ui_side_conn, data_len)
+    return data
+    
+    
+  def send(self, msg):
+    """
+    Fill in docstring
+    """
+    try:
+      HydraUtils.socket_send(self.ui_side_conn, msg)
+    except Exception as e:
+      self.log.exception(e)
+      return False
+    return True
     
   def set_server_connection(self, addr=None, port=None):
     """
@@ -135,12 +173,6 @@ class HydraServer(object):
     if port is not None:
       self.server_listen_port = port
       
-  def get_api_pipe_handle(self):
-    """
-    Fill in docstring
-    """
-    return self.api_pipe
-  
   def serve_forever(self):
     """
     Fill in docstring
@@ -167,7 +199,7 @@ class HydraServer(object):
           self._heartbeat(idle_count)
       except KeyboardInterrupt:
         self.log.debug("Caught keyboard interrupt waiting for event")
-        self._shutdown(type='full')
+        self._shutdown(type='immediate')
         break
       except IOError as ioe:
         for i in self.inputs:
@@ -180,22 +212,37 @@ class HydraServer(object):
               self.inputs.remove(i)
             except:
               self.log.error("Unable to remove handle from select: %s"%i)
-              self._shutdown(type='full')
+              self._shutdown(type='immediate')
 
       # Handle inputs
       for s in readable:
         if s is self.server:
           self._setup_client()
-        elif s is self.server_pipe:
-          msg = s.recv()
-          self._process_command(msg)
+        elif s is self.svr_side_conn:
+          # Command received from the UI
+          msg_size = s.recv(4)
+          if len(msg_size) != 4:
+            continue
+          data_len = struct.unpack('!L', msg_size)[0]
+          data = HydraUtils.socket_recv(s, data_len)
+          self._process_command(data)
         else:
+          # Command received from a client
           try:
-            self.log.log(9, "Got cmd from client: %s"%s)
-            msg = pickle.load(self.clients[s]['handle'])
-            self._process_client_command(s, msg)
+            self.log.log(9, "Got cmd from client: %s"%s.fileno())
+            msg_size = s.recv(4)
+            if len(msg_size) != 4:
+              self._cleanup_client(s)
+              continue
+            data_len = struct.unpack('!L', msg_size)[0]
+            data = HydraUtils.socket_recv(s, data_len)
+            self._process_client_command(s, data)
           except EOFError as eof:
             self.log.debug("Attempted to read closed socket: %s"%s)
+            self._cleanup_client(s)
+          except socket.error as serr:
+            if serr.errno != errno.ECONNRESET:
+              raise
             self._cleanup_client(s)
           except Exception as e:
             self.log.exception(e)
@@ -205,26 +252,45 @@ class HydraServer(object):
       for s in exceptional:
         self.log.error('Handling exceptional condition for %r'%s)
         if s is self.server:
-          self._shutdown(type='full')
+          self._shutdown(type='immediate')
           break
     self.log.debug("Server exiting")
   
   ''' Internal methods '''
+  def _connect_ui(self):
+    # Create temporary socket to listen for server<->ui connection
+    listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listen_sock.bind((self.loopback_addr, self.loopback_port))
+    self.loopback_port = listen_sock.getsockname()[1]
+    listen_sock.listen(1)
+    # Create connection between server<->ui and exchange secret
+    self.ui_side_conn = socket.create_connection((self.loopback_addr, self.loopback_port))
+    self.ui_side_conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+    self.svr_side_conn, _ = listen_sock.accept()
+    # Close the listening socket as we no longer require it
+    listen_sock.close()
+    secret = HydraUtils.create_uuid_secret()
+    self.ui_side_conn.sendall(secret)
+    security = self.svr_side_conn.recv(len(secret))
+    if security != secret:
+      self.log.warn("Invalid secret exchange for socket connection!")
+    self.inputs.append(self.svr_side_conn)
+    self._send_ui_stats()
+  
   def _setup_client(self):
     """
     Fill in docstring
     """
     connection, client_address = self.server.accept()
-    self.log.debug('New connection from %s, Socket: %s'%(client_address, connection))
-    connection.setblocking(0)
+    self.log.debug('New connection from client %s, FD: %s'%(client_address, connection.fileno()))
     connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
     self.inputs.append(connection)
     client_obj = {
-      'client': connection,
+      'conn': connection,
       'addr': client_address,
-      'handle': connection.makefile('wb+'),
       'stats': {},
-      'state': 'connected',
+      'state': 'connecting',
     }
     self.init_stats(client_obj)
     self.clients[connection] = client_obj
@@ -234,14 +300,12 @@ class HydraServer(object):
     """
     Fill in docstring
     """
-    if self.clients:
-      c = self.clients.get(client)
-      if c:
-        try:
-          pickle.dump(cmd, c['handle'], pickle.HIGHEST_PROTOCOL)
-          c['handle'].flush()
-        except Exception as e:
-          self.log.exception(e)
+    c = self.clients.get(client)
+    if c:
+      try:
+        HydraUtils.socket_send(c['conn'], cmd)
+      except Exception as e:
+        self.log.exception(e)
     
   def _process_client_state(self, client, cmd):
     """
@@ -250,7 +314,7 @@ class HydraServer(object):
     old_state = self.clients[client]['state']
     state = cmd.get('state')
     self.clients[client]['state'] = state
-    self.log.debug("Client %s state change %s -> %s"%(client, old_state, state))
+    self.log.debug("Client %s state change %s -> %s"%(client.fileno(), old_state, state))
     if state == 'shutdown':
       self._cleanup_client(client)
     if (old_state != 'idle' and state == 'idle'):
@@ -273,7 +337,7 @@ class HydraServer(object):
     Fill in docstring
     """
     # Stats will be consolidated only when needed to save computation time
-    self.log.debug("Process client stats: %s"%cmd)
+    self.log.debug("Process client (%s) stats: %s"%(client.fileno(), cmd))
     self.clients[client]['stats'] = cmd.get('stats')
       
   def _process_client_command(self, client, cmd):
@@ -307,7 +371,7 @@ class HydraServer(object):
       key = "%s:%s"%(str(client), c['addr'])
       self.shutdown_clients[key] = {'stats': c['stats']}
       try:
-        c['handle'].close()
+        c['conn'].close()
         client.close()
       except Exception as e:
         self.log.debug("Exception closing client %s: %s"%(client, e))
@@ -334,6 +398,7 @@ class HydraServer(object):
     """
     Fill in docstring
     """
+    clients_sent_work = {}
     for i in range(self.dirs_per_idle_client):
       for k in self.clients.keys():
         if self.clients.get(k, {})['state'] == 'idle':
@@ -342,18 +407,20 @@ class HydraServer(object):
           except:
             self.log.debug("No directories queued for processing. Search for idle clients stopped")
             return
-          self.log.debug("Sending idle client directory: %s"%work_item['path'])
+          self.log.debug("Sending idle client (%s) directory: %s"%(k.fileno(), work_item['path']))
           self._send_client_command(k, {'cmd': 'submit_work', 'paths': [work_item['path']]})
+          clients_sent_work[k] = True
+    # Semi-hack to track the fact we have sent work to an idle client 
+    for k in clients_sent_work.keys():
+      self.log.debug("Setting client (%s) to idle_queued_work"%k.fileno())
+      self.clients[k]['state'] = 'idle_queued_work'
     
   def _send_ui(self, msg, flush=True):
     """
     Fill in docstring
     """
-    self.log.debug("Sending UI message: %s"%msg)
-    try:
-      self.server_pipe.send(msg)
-    except Exception as e:
-      self.log.exception(e)
+    self.log.log(5, "Sending to UI")
+    HydraUtils.socket_send(self.svr_side_conn, msg)
       
   def _send_ui_stats(self, cmd={}):
     """
@@ -361,12 +428,14 @@ class HydraServer(object):
     """
     self.consolidate_stats()
     if cmd.get('data', 'simple') == 'simple':
+      self.log.log(9, 'Sending UI consolidate stats: %s'%self.stats)
       self._send_ui({'cmd': 'stats', 'stats': self.stats})
     elif cmd.get('data') == 'individual_clients':
       for set in [self.clients, self.shutdown_clients]:
         for c in set:
           if not set[c]['stats']:
             continue
+          self.log.log(9, 'Sending UI stats for client %s: %s'%(set[c]['addr'], self.stats))
           self._send_ui({'cmd': 'stats_individual_clients', 'stats': set[c]['stats'], 'client': set[c]['addr']})
     
   def _get_client_stats(self):
@@ -382,12 +451,11 @@ class HydraServer(object):
     Fill in docstring
     """
     self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    #self.server.setblocking(0)
     self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self.server.bind((self.server_listen_addr, self.server_listen_port))
     if self.server_listen_port == 0:
       self.server_listen_port = self.server.getsockname()[1]
-    self.server.listen(5)
+    self.server.listen(10)
     self.inputs.append(self.server)
     self._set_server_state('idle')
     
@@ -408,29 +476,51 @@ class HydraServer(object):
 
   def _update_server_state(self):
     """
-    Fill in docstring
+    Current possible states:
+      initializing
+      idle
+      processing
+      shutdown_pending
+      shutdown
     """
     old_state = self.state
     next_state = self.state
     idle = 0
     not_idle = 0
+    shutdown = 0
+    queued_work = len(self.work_queue)
     for c in self.clients:
-      if self.clients[c]['state'] in ['initializing', 'connected', 'idle']:
+      c_state = self.clients[c]['state']
+      if c_state in ['initializing', 'connected', 'idle']:
         idle += 1
-      else:
+      elif c_state in ['shutdown', 'shutdown_pending']:
+        shutdown += 1
+      else: # ['processing']
         not_idle += 1
-    self.log.debug("Idle clients: %s, Non-idle clients: %s, Num clients: %s"%(idle, not_idle, self.num_clients))
-    if self.state == 'shutdown_pending':
+    self.log.debug("Clients Idle/Proc/Shutdown/Total: %d/%d/%d/%d, Work Q: %d"%(idle, not_idle, shutdown, self.num_clients, queued_work))
+    
+    if self.state in ['shutdown_pending', 'shutdown']:
       if self.num_clients == 0:
         next_state = 'shutdown'
     else:
       if not_idle > 0:
+        # idle -> processing, processing -> processing
         next_state = 'processing'
-      else:
+      elif queued_work == 0:
         next_state = 'idle'
-    if old_state != next_state and next_state == 'shutdown':
-      self._send_ui_stats()
-    self._set_server_state(next_state)
+      else:
+        self.log.debug('Server requires no state change')
+        
+    if old_state != next_state:
+      if next_state == 'shutdown':
+        self._send_ui_stats()
+        if self.log.level >= logging.DEBUG:
+          for set in [self.clients, self.shutdown_clients]:
+            for c in set:
+              if not set[c]['stats']:
+                continue
+              self.log.debug("Client (%s) stats: %s"%(set[c]['addr'], set[c]['stats']))
+      self._set_server_state(next_state)
       
   def _heartbeat(self, idle_count):
     """
@@ -439,7 +529,7 @@ class HydraServer(object):
     self.log.debug("Heartbeat count: %d, idle count: %d"%(self.heartbeat_count, idle_count))
     # First check if we need to shutdown this client
     self.log.debug("Checking for shutdown state: %s"%self.state)
-    if self.state == 'shutdown_pending' and idle_count > self.max_shutdown_idle_interval:
+    if self.state == 'shutdown_pending' and idle_count > self.idle_shutdown_interval:
       self._set_server_state('shutdown')
       return
     # Check if we have idle clients. If we do query any active clients and have
@@ -460,7 +550,8 @@ class HydraServer(object):
           self.log.debug("Requesting active client to return work: %s"%c)
           self._send_client_command(c, {'cmd': 'return_work'})
       else:
-        self.log.debug("Existing work queue items sufficient to send to idle workers")
+        if num_idle_clients > 0:
+          self.log.debug("Existing work queue items sufficient to send to idle workers")
     except Exception as e:
       self.log.exception(e)
     # If we have any unprocessed work items, send them to the workers
@@ -475,7 +566,7 @@ class HydraServer(object):
     Fill in docstring
     """
     if not 'cmd' in cmd:
-      self.log.error("Unknown command format received from server: %r"%cmd)
+      self.log.error("Unknown command format received from UI: %r"%cmd)
       return
     command = cmd.get('cmd')
     if command == "submit_work":
@@ -491,13 +582,13 @@ class HydraServer(object):
       pass
     else:
       if not self.handle_extended_server_cmd(cmd):
-        self.log.warn("Unhandled server command: %s"%cmd)
+        self.log.warn("Unhandled UI command: %s"%cmd)
       
   def _shutdown(self, type='normal'):
     """
     Fill in docstring
     """
-    if type == 'full':
+    if type == 'immediate':
       self._set_server_state('shutdown')
     else:
       self._set_server_state('shutdown_pending')
@@ -511,31 +602,36 @@ class HydraServer(object):
 
 class HydraServerProcess(multiprocessing.Process):
   def __init__(self,
-        handler=None,
         addr=HydraUtils.DEFAULT_LISTEN_ADDR,
         port=HydraUtils.DEFAULT_LISTEN_PORT,
-    ):
+        args={},
+        handler=None,
+        ):
     super(HydraServerProcess, self).__init__()
+    self.args = dict(args)
+    self.handler = handler
     if handler:
-      self.server = handler()
+      self.server = handler(args=self.args)
     else:
-      self.server = HydraServer()
+      self.server = HydraServer(args=self.args)
     self.listen_addr = addr
     self.listen_port = port
     self.server.set_server_connection(addr=self.listen_addr, port=self.listen_port)
-    self.api_pipe = self.server.get_api_pipe_handle()
   
   def fileno(self):
-    return self.api_pipe.fileno()
+    return self.server.fileno()
     
+  def init_process_logging(self):
+    if len(logging.getLogger().handlers) == 0:
+      if self.args.get('logger_cfg'):
+        logging.config.dictConfig(self.args['logger_cfg'])
+  
   def send(self, msg):
-    self.api_pipe.send(msg)
+    self.server.send(msg)
     
   def recv(self):
-    return self.api_pipe.recv()
-    
-  def get_api_pipe(self):
-    return self.api_pipe
+    return self.server.recv()
     
   def run(self):
+    self.init_process_logging()
     self.server.serve_forever()

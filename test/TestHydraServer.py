@@ -19,26 +19,28 @@ FILE_SIZE = 1024*8
 RANDOM_DATA_BUF_SIZE = 1024*1024*4
 POLL_WAIT_SECONDS = 5
 FILE_DELAY = 0.25
+LOGGER_CONFIG = None
 
 if __package__ is None:
     # test code is run from the ./test directory.  add the parent
-    # directory to the path so that we can see all the isi_ps code.
+    # directory to the path
     current_file = inspect.getfile(inspect.currentframe())
     base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
     sys.path.insert(0, base_path)
-    from HydraWorker import HydraWorker
-    from HydraClient import HydraClient
-    from HydraClient import HydraClientProcess
-    from HydraServer import HydraServer
-    from HydraServer import HydraServerProcess
+from HydraWorker import HydraWorker
+from HydraClient import HydraClient
+from HydraClient import HydraClientProcess
+from HydraServer import HydraServer
+from HydraServer import HydraServerProcess
+import HydraUtils
 
 """
 This method creates files with random data in them using a single buffer
 """
 def create_files(path, num, size, buffer = None, buf_size = 1024*1024, prefix = 'file', force_overwrite = False):
   if buffer is None:
-    buffer = bytearray(random.getrandbits(8) for x in xrange(buf_size))
-  for i in xrange(num):
+    buffer = bytearray(random.getrandbits(8) for x in range(buf_size))
+  for i in range(num):
     offset = random.randrange(buf_size)
     bytes_to_write = size
     if force_overwrite is False:
@@ -48,6 +50,8 @@ def create_files(path, num, size, buffer = None, buf_size = 1024*1024, prefix = 
           continue
       except:
         pass
+    if not os.path.isdir(path):
+      os.makedirs(path)
     with open(os.path.join(path, '%s%d'%(prefix, i)), 'wb') as f:
       while bytes_to_write > 0:
         remainder = buf_size - offset
@@ -59,11 +63,12 @@ def create_files(path, num, size, buffer = None, buf_size = 1024*1024, prefix = 
           bytes_to_write -= remainder
     
 
-class HydraTestClassSlowFileProcess(HydraWorker):
+class HydraTestClass(HydraWorker):
   def __init__(self, args={}):
-    super(HydraTestClassSlowFileProcess, self).__init__(args)
+    super(HydraTestClass, self).__init__(args)
     # Set a default delay of 0.5 seconds per file processed
-    self.file_delay = FILE_DELAY
+    #self.file_delay = FILE_DELAY
+    self.file_delay = 0
     
   def setFileDelay(self, delay_in_seconds):
     self.file_delay = delay_in_seconds
@@ -114,15 +119,15 @@ class TestHydraServer(unittest.TestCase):
     if os.path.isfile(os.path.join(cls.test_path, 'skip_check')):
       return
     logging.getLogger().info("Setting up file structure. This may take time")
-    cls.rand_buffer = bytearray(random.getrandbits(8) for x in xrange(cls.buffer_size))
-    for i in xrange(NUM_DIRS):
+    cls.rand_buffer = bytearray(random.getrandbits(8) for x in range(cls.buffer_size))
+    for i in range(NUM_DIRS):
       cur_path = os.path.join(cls.test_path, "dir%s"%i)
       try:
         os.makedirs(cur_path, exists_ok = True)
       except:
         pass
       create_files(cur_path, FILES_PER_DIR, FILE_SIZE, cls.rand_buffer, cls.buffer_size)
-      for j in xrange(NUM_SUBDIRS):
+      for j in range(NUM_SUBDIRS):
         sub_path = os.path.join(cur_path, "subdir%s"%j)
         try:
           os.makedirs(sub_path)
@@ -132,7 +137,7 @@ class TestHydraServer(unittest.TestCase):
 
   @classmethod
   def tearDownClass(cls):
-    print("tearDownClass called")
+    #print("tearDownClass called")
     try:
       #cls.server.close()
       cls.server = None
@@ -141,9 +146,9 @@ class TestHydraServer(unittest.TestCase):
     cls.rand_buffer = None
     cls = None
 
-  #@unittest.skip("")
+  @unittest.skip("")
   def test_1_spawn_server_and_shutdown(self):
-    svr = HydraServerProcess()
+    svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
     
     svr.send({'cmd': 'shutdown'})
@@ -154,12 +159,12 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
 
-  #@unittest.skip("")
+  @unittest.skip("")
   def test_2_single_client_connection_and_shutdown(self):
-    svr = HydraServerProcess()
+    svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
     clients = []
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
+    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG}))
     for c in clients:
       c.start()
     
@@ -175,15 +180,14 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
   
-  #@unittest.skip("")
+  @unittest.skip("")
   def test_3_multiple_client_connection_and_shutdown(self):
-    svr = HydraServerProcess()
+    svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
     clients = []
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
+    num_clients = 4
+    for i in range(num_clients):
+      clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG}))
     for c in clients:
       c.start()
     
@@ -199,20 +203,19 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
       
-  #@unittest.skip("")
+  @unittest.skip("")
   def test_4_single_client_single_dir(self):
-    svr = HydraServerProcess()
+    svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
     clients = []
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
+    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG}))
     for c in clients:
       c.start()
-    
     inputs = [svr]
 
     # Wait for server to be idle before submitting work
     found = False
-    for i in range(2):
+    for i in range(40):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
       if len(readable) > 0:
         cmd = svr.recv()
@@ -227,7 +230,7 @@ class TestHydraServer(unittest.TestCase):
     svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir0')]})
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
-      if len(readable) > 0:
+      if readable:
         cmd = svr.recv()
         if cmd['cmd'] == 'state':
           if cmd['state'] == 'idle':
@@ -257,27 +260,25 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
 
-  #@unittest.skip("")
-  def test_5_multiple_client_multiple_dir(self):
-    svr = HydraServerProcess()
+  @unittest.skip("")
+  def test_5_multiple_client_2_worker_multiple_dir(self):
+    svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
     clients = []
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
+    num_clients = 3
+    for i in range(num_clients):
+      clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG}))
     for c in clients:
+      c.set_workers(2)
       c.start()
-    
     inputs = [svr]
+    num_test_dirs = 6
+    dirs_per_test_dir = 11
+    files_per_test_dir = 110
     
     logging.getLogger().debug("Submitting work")
-    svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir0')]})
-    svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir1')]})
-    svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir2')]})
-    svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir3')]})
-    svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir4')]})
-    svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir5')]})
-    svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir6')]})
+    for i in range(num_test_dirs):
+      svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
     found = False
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
@@ -287,7 +288,7 @@ class TestHydraServer(unittest.TestCase):
           if cmd['state'] == 'processing':
             found = True
             break
-    self.assertTrue(found, msg="Server never sent state change to processing state")        
+    self.assertTrue(found, msg="Server never sent state change to processing state")
     
     found = False
     for i in range(20):
@@ -308,8 +309,8 @@ class TestHydraServer(unittest.TestCase):
       if len(readable) > 0:
         cmd = svr.recv()
         if cmd['cmd'] == 'stats':
-          self.assertEqual(cmd['stats']['processed_files'], 770)
-          self.assertEqual(cmd['stats']['processed_dirs'], 77)
+          self.assertEqual(cmd['stats']['processed_files'], (num_test_dirs)*files_per_test_dir)
+          self.assertEqual(cmd['stats']['processed_dirs'], (num_test_dirs)*dirs_per_test_dir)
           break
     logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
@@ -320,20 +321,33 @@ class TestHydraServer(unittest.TestCase):
       raise
 
   #@unittest.skip("")
-  def test_6_multiple_client_large_dir(self):
-    svr = HydraServerProcess()
+  def test_6_multiple_client_8_worker_large_dir(self):
+    svr = HydraServerProcess(args={
+        'logger_cfg': LOGGER_CONFIG,
+        'dirs_per_idle_client': 1,
+    })
     svr.start()
     clients = []
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
-    clients.append(HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClassSlowFileProcess}))
+    num_clients = 3
+    for i in range(num_clients):
+      clients.append(HydraClientProcess({
+          'svr': '127.0.0.1',
+          'port': 8101,
+          'file_handler': HydraTestClass,
+          'logger_cfg': LOGGER_CONFIG,
+      }))
+      #time.sleep(0.25)
     for c in clients:
+      c.set_workers(8)
       c.start()
-    
     inputs = [svr]
+    num_test_dirs = 10
+    dirs_per_test_dir = 11
+    files_per_test_dir = 110
     
     logging.getLogger().debug("Submitting work")
-    svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path)]})
+    for i in range(num_test_dirs):
+      svr.send({'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
     found = False
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
@@ -343,7 +357,7 @@ class TestHydraServer(unittest.TestCase):
           if cmd['state'] == 'processing':
             found = True
             break
-    self.assertTrue(found, msg="Server never sent state change to processing state")        
+    self.assertTrue(found, msg="Server never sent state change to processing state")
     
     found = False
     for i in range(20):
@@ -358,32 +372,21 @@ class TestHydraServer(unittest.TestCase):
             
     logging.getLogger().debug("Server is idle. Get individual client stats then shutdown")
     svr.send({'cmd': 'get_stats', 'data': 'individual_clients'})
+    logging.getLogger().debug("Shutting down")
+    svr.send({'cmd': 'shutdown'})
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
       if len(readable) > 0:
         cmd = svr.recv()
         if cmd['cmd'] == 'stats_individual_clients':
           logging.getLogger().debug("Individual client stat: %s"%cmd['stats'])
+        elif cmd['cmd'] == 'stats':
+            logging.getLogger().debug("Final server stats: %s"%cmd['stats'])
+            self.assertEqual(cmd['stats']['processed_files'], (num_test_dirs)*files_per_test_dir)
+            self.assertEqual(cmd['stats']['processed_dirs'], (num_test_dirs)*dirs_per_test_dir)
+            break
       else:
         break
-    
-    logging.getLogger().debug("Shutting down")
-    svr.send({'cmd': 'shutdown'})
-    
-    logging.getLogger().debug("Waiting for final stats update")
-    for i in range(20):
-      try:
-        readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
-        if len(readable) > 0:
-          cmd = svr.recv()
-          if cmd['cmd'] == 'stats':
-            self.assertEqual(cmd['stats']['processed_files'], 1101)
-            self.assertEqual(cmd['stats']['processed_dirs'], 111)
-            break
-      except KeyboardInterrupt:
-        break
-    svr.send({'cmd': 'shutdown'})
-    logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
     try:
       self.assertFalse(svr.is_alive())
@@ -392,15 +395,18 @@ class TestHydraServer(unittest.TestCase):
       raise
 
 if __name__ == '__main__':
-  root = logging.getLogger()
-  root.setLevel(logging.WARN)
-  #root.setLevel(logging.DEBUG)
-  #root.setLevel(9)
-
-  ch = logging.StreamHandler(sys.stdout)
-  formatter = logging.Formatter('%(asctime)s - %(name)s - %(process)d - %(levelname)s - %(message)s')
-  ch.setFormatter(formatter)
-  root.addHandler(ch)
+  debug_count = sys.argv.count('--debug')
+  log_lvl = logging.WARN
+  if debug_count > 2:
+    log_lvl = 5
+  elif debug_count > 1:
+    log_lvl = 9
+  elif debug_count > 0:
+    log_lvl = logging.DEBUG
+  LOGGER_CONFIG = dict(HydraUtils.LOGGING_CONFIG)
+  HydraUtils.config_logger(LOGGER_CONFIG, '', log_level=log_lvl)
+  logging.config.dictConfig(LOGGER_CONFIG)
+  root = logging.getLogger('')
 
   suite1 = unittest.TestLoader().loadTestsFromTestCase(TestHydraServer)
   all_tests = unittest.TestSuite([suite1])

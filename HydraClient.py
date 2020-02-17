@@ -2,32 +2,6 @@
 """
 Module description here
 """
-'''
-TODO: Need to add support for keeping local stats about queued dirs and combine with workers
-TODO: Need to add code to return all unprocessed items when shutting down client
-TODO: Change code to run a state machine to simplify logic
-TODO: Need to set state where we need to go from initializing -> Connected -> idle
-      If we are not connected when server_forever is called we need to wait to get into
-      connected state
-'''
-import os
-import sys
-import multiprocessing
-import time
-import logging
-import socket
-import errno
-import select
-try:
-   import cPickle as pickle
-except:
-   import pickle
-import zlib
-from collections import deque
-import HydraWorker
-import HydraUtils
-
-
 __title__ = "HydraClient"
 __version__ = "1.0.0"
 __all__ = ["HydraClient", "HydraClientProcess"]
@@ -51,38 +25,77 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
 SOFTWARE."""
 
+
+'''
+TODO: Need to add support for keeping local stats about queued dirs and combine with workers
+TODO: Need to add code to return all unprocessed items when shutting down client
+TODO: Change code to run a state machine to simplify logic
+TODO: Need to set state where we need to go from initializing -> Connected -> idle
+      If we are not connected when serve_forever is called we need to wait to get into
+      connected state
+'''
+
+"""
+State table
+
+<Start state> initializing
+initializing -> connected
+connected -> idle
+idle -> processing
+idle -> shutdown
+idle -> shutdown_pending
+processing -> idle
+processing -> shutdown
+processing -> shutdown_pending
+shutdown_pending -> shutdown
+shutdown <End State>
+"""
+import os
+import sys
+import multiprocessing
+import time
+import logging
+import socket
+import errno
+import select
+import struct
+try:
+   import cPickle as pickle
+except:
+   import pickle
+import zlib
+from collections import deque
+import HydraWorker
+import HydraUtils
+
+
 class HydraClient(object):
-  def __init__(self, worker_class, worker_args={}):
+  def __init__(self, worker_class, args={}):
     """
     Fill in docstring
     """
+    self.args = dict(args)
     self.log = logging.getLogger(__name__)
-    self.worker_base_class = worker_class
-    self.worker_args = worker_args
+    self.heartbeat_interval = args.get('heartbeat_interval', HydraUtils.HEARTBEAT_INTERVAL)                   # Seconds for each heartbeat
+    self.idle_shutdown_interval = args.get('idle_shutdown_interval', HydraUtils.IDLE_SHUTDOWN_THRESHOLD)      # Number of idle heartbeats before forcing a pending shutdown
+    self.dirs_per_idle_worker = args.get('dirs_per_idle_worker', HydraUtils.DIRS_PER_IDLE_WORKER)
+    self.select_poll_interval = args.get('select_poll_interval', HydraUtils.SELECT_POLL_INTERVAL)
+    self.stats_heartbeat_interval = args.get('stats_heatbeat_interval', HydraUtils.STATS_HEARTBEAT_INTERVAL)  # Number of heartbeat intervals per worker stat update
     self.heartbeat_count = 1
-    self.heartbeat_interval = HydraUtils.HEART_BEAT_INTERVAL                    # Seconds for each heartbeat
-    self.max_shutdown_idle_interval = HydraUtils.IDLE_SHUTDOWN_THRESHOLD        # Number of idle heartbeats before forcing a pending shutdown
-    self.dirs_per_idle_worker = HydraUtils.DIRS_PER_IDLE_WORKER
-    self.select_poll_interval = HydraUtils.SELECT_POLL_INTERVAL
-    self.stats_heartbeat_interval = HydraUtils.STATS_HEARTBEAT_INTERVAL         # Number of heartbeat intervals per worker stat update
     self.num_workers = 0
+    self.worker_base_class = worker_class
     self.workers = {}                                                           # Active worker list
     self.shutdown_pending = {}                                                  # Workers that are pending shutdown
     self.shutdown_workers = {}                                                  # Workers that are fully cleaned up, saving only the stats
+    self.stats = {}
     self.state = 'initializing'
     self.work_queue = deque()
-    self.stats = {}
     self.init_stats(self.stats)
 
     # Variables dealing with server and worker communication
     self.server = None
-    self.server_handle = None
-    # Used instead of or in addition to a server connection to receive
-    # commands
-    self.local_client_pipe, self.local_loop_pipe = multiprocessing.Pipe()
     # Sockets from which we expect to read from through a select call
     self.inputs = []
-    self.inputs.append(self.local_client_pipe)
     
   def init_stats(self, stat_state):
     """
@@ -111,10 +124,10 @@ class HydraClient(object):
     except Exception as e:
       self.log.exception(e)
 
-  def handle_extended_client_msg(self, raw_data):
+  def handle_extended_worker_msg(self, raw_data):
     """
     Called by the main loop when an unknown command is found
-    This can be used to support custom commands from a HydraClient without
+    This can be used to support custom commands from a HydraWorker without
     having to re-write the operation parser. This can be overridden as necessary
     when subclassing :class:`HydraWorker <multiprocessing.Process>`.
     
@@ -141,11 +154,9 @@ class HydraClient(object):
     Fill in docstring
     """
     self.server = socket.create_connection((server_addr, server_port))
-    #self.server.setblocking(0)
     self.server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-    self.server_handle = self.server.makefile('wb+')
-    self._set_client_state('connected')
     self.inputs.append(self.server)
+    self._set_state('connected')
   
   def get_num_workers(self):
     """
@@ -170,7 +181,7 @@ class HydraClient(object):
     Fill in docstring
     """
     for w in range(num):
-      worker = self.worker_base_class(self.worker_args)
+      worker = self.worker_base_class(self.args)
       self.inputs.append(worker)
       self._init_worker_state(worker)
       self.num_workers += 1
@@ -196,7 +207,7 @@ class HydraClient(object):
     # of workers requested. If the number of idle workers is less than the
     # number of workers we want to shut down, we will have to force some active
     # workers to shutdown as well
-    for i in range(len(retire_keys) - num):
+    for i in range(num - len(retire_keys)):
       retire_keys.append(non_idle_keys.pop())
     for k in retire_keys:
       # Pull some workers out of the working set and shut them down
@@ -215,7 +226,7 @@ class HydraClient(object):
     """
     if self.num_workers == 0:
       self.set_workers()
-    self._set_client_state('idle')
+    self._set_state('idle')
     
     idle_count = 0
     start_time = time.time()
@@ -231,12 +242,12 @@ class HydraClient(object):
           idle_count = idle_count + 1
         else:
           idle_count = 0
-        if (time.time() - start_time >= self.heartbeat_count*self.heartbeat_interval):
+        if (time.time() - start_time) >= (self.heartbeat_count*self.heartbeat_interval):
           self.heartbeat_count += 1
           self._heartbeat(idle_count)
       except KeyboardInterrupt:
         self.log.debug("Caught keyboard interrupt waiting for event")
-        self._shutdown(type='full')
+        self._shutdown(type='immediate')
         break
       except IOError as ioe:
         for i in self.inputs:
@@ -249,22 +260,34 @@ class HydraClient(object):
               self.inputs.remove(i)
             except:
               self.log.error("Unable to remove handle from select: %s"%i)
-              self._shutdown(type='full')
+              self._shutdown(type='immediate')
 
       # Handle inputs
       for s in readable:
         try:
           if s is self.server:
             try:
-              cmd = pickle.load(self.server_handle)
-              self._process_command(cmd)
+              msg_size = s.recv(4)
+              if len(msg_size) != 4:
+                self.log.debug("Closing server handle due to EOF of command stream: %r"%s)
+                self._shutdown(type='immediate')
+                continue
+              data_len = struct.unpack('!L', msg_size)[0]
+              data = HydraUtils.socket_recv(s, data_len)
+              self._process_command(data)
             except EOFError as eof:
               self.log.debug("Closing server handle due to EOF of command stream: %r"%s)
-              self._shutdown(type='full')
+              self._shutdown(type='immediate')
+              continue
+            except socket.error as serr:
+              if serr.errno != errno.ECONNRESET:
+                raise
+              self.log.debug("Closing server handle due to EOF of command stream: %r"%s)
+              self._shutdown(type='immediate')
               continue
             except Exception:
               self.log.exception("Exception encountered during command processing.")
-              self._shutdown(type='full')
+              self._shutdown(type='immediate')
               continue
           else:
             cmd = s.recv()
@@ -283,87 +306,18 @@ class HydraClient(object):
       for s in exceptional:
         self.log.error('Handling exceptional condition for %r'%s)
         if s is self.server:
-          self._shutdown(type='full')
+          self._shutdown(type='immediate')
           break
     self.log.debug("Client exiting")
+    self._cleanup_all_workers()
       
-  ''' Internal methods '''
-  def _init_worker_state(self, worker):
-    """
-    Fill in docstring
-    """
-    self.workers[worker.name] = {
-      'obj': worker,
-      'state': 'initializing',
-      'stats': {},
-    }
-    
-  def _process_worker_state(self, worker_id, state):
-    """
-    Fill in docstring
-    """
-    old_state = None
-    worker = self.workers.get(worker_id, self.shutdown_pending.get(worker_id, None))
-    if worker:
-      old_state = worker['state']
-      if state in HydraUtils.HYDRA_WORKER_STATES.values():
-        worker['state'] = state
-      else:
-        self.log.error("Invalid HydraWorker state update received for worker: %s:%s"%(state, worker_id))
-    self.log.debug("Worker %s state change %s -> %s"%(worker_id, old_state, state))
-    if (old_state != 'idle' and state == 'idle'):
-      self._process_dirs()
-    self._update_client_state()
-    return old_state
-  
-  def _process_returned_work(self, msg):
-    """
-    Fill in docstring
-    """
-    for i in msg.get('data', []):
-      if i['type'] == 'dir':
-        self._queue_work_paths(i['path'])
-      elif i['type'] == 'partial_dir':
-        # TODO: Need to support partial work path
-        self.log.critical('Partial work path returned. This is currently not supported')
-        #self._queue_work_paths(i['path'])
-      else:
-        self.log.warn("Unknown work item returned: %s"%i)
-        
-  def _process_worker_stats(self, msg):
-    """
-    Save the stats object the worker sends without processing immediately.
-    Stats will be consolidated only when needed to save computation time
-    """
-    self.log.debug("Process worker stats: %s"%msg)
-    k = msg.get('id')
-    worker = self.workers.get(k, self.shutdown_pending.get(k, None))
-    if worker:
-      worker['stats'] = msg.get('data')
-      
-  def _process_worker_command(self, worker, cmd):
-    """
-    Fill in docstring
-    """
-    op = cmd.get('op', None)
-    if op in ('status_idle', 'status_processing', 'status_paused'):
-      old_state = self._process_worker_state(cmd['id'], cmd['op'][7:])
-    elif op == 'status_shutdown_complete':
-      self.log.debug("Worker shutdown complete: %r"%cmd)
-      self._cleanup_worker(cmd['id'])
-      if (self.get_num_workers() < 1) and (len(self.shutdown_pending) == 0):
-        self._send_server_stats()
-        self._set_client_state('shutdown')
-        self._shutdown(type='full')
-    elif op == 'work_items':
-      self._process_returned_work(cmd)
-    elif op == 'stats':
-      self._process_worker_stats(cmd)
-    elif op == 'state':
-      old_state = self._process_worker_state(cmd['id'], cmd['data'])
-    else:
-      if not self.handle_extended_client_msg(cmd):
-        self.log.warn("Client got unexpected cmd from worker: %s"%worker)
+  #
+  # Internal methods
+  #
+  def _cleanup_all_workers(self):
+    keys = list(self.workers.keys())
+    for key in keys:
+      self._cleanup_worker(key)
   
   def _cleanup_worker(self, worker_id):
     """
@@ -386,77 +340,20 @@ class HydraClient(object):
     self.log.log(9, "Remaining shutdown pending worker dict: %s"%self.shutdown_pending)
     self.log.log(9, "Active inputs: %s"%self.inputs)
     
-  def _queue_work_paths(self, paths):
-    """
-    Fill in docstring
-    """
-    if not isinstance(paths, (list, tuple)):
-      paths = [paths]
-    for path in paths:
-      if not path:
-        continue
-      self.work_queue.append({'type': 'dir', 'path': path})
-  
-  def _process_dirs(self):
-    """
-    Fill in docstring
-    """
-    for i in range(self.dirs_per_idle_worker):
-      for k in self.workers.keys():
-        if self.workers.get(k, {})['state'] == 'idle':
-          try:
-            work_item = self.work_queue.popleft()
-          except:
-            self.log.debug("No directories queued for processing. Search for idle workers stopped")
-            return
-          self.log.debug("Sending idle worker directory: %s"%work_item['path'])
-          self.workers[k]['obj'].send({'op': 'proc_dir', 'dirs': [work_item['path']]})
-  
-  def _send_server(self, msg, flush=True):
-    """
-    Fill in docstring
-    """
-    self.log.debug("Sending server message: %s"%msg)
-    try:
-      if self.server_handle:
-        pickle.dump(msg, self.server_handle, pickle.HIGHEST_PROTOCOL)
-        if flush:
-          self.server_handle.flush()
+  def _get_idle_working_worker_keys(self):
+    idle = []
+    processing = []
+    for k in self.workers.keys():
+      worker_state = self.workers.get(k, {})['state']
+      if worker_state == 'idle':
+        idle.append(k)
+      elif (worker_state == 'processing') or (worker_state == 'paused'):
+        processing.append(k)
       else:
-        self.log.warn("Request to send server message with a closed server connection: %s"%msg)
-        self._shutdown(type='full')
-    except Exception as e:
-      self.log.exception(e)
-      raise
+        self.log.log(9, "Found worker in state: %s"%worker_state)
+    return idle, processing
+
       
-  def _send_server_stats(self):
-    """
-    Fill in docstring
-    """
-    self.consolidate_stats()
-    self._send_server({'cmd': 'stats', 'stats': self.stats})
-    
-  def _return_server_work(self, divisor=2):
-    """
-    Use simple algorithm by returning roughly half of our work items
-    """
-    return_queue = len(self.work_queue)//divisor
-    if return_queue > 0:
-      return_items = []
-      for i in range(return_queue):
-        work_item = self.work_queue.pop()
-        work_type = work_item.get('type', None)
-        # TODO: Need to account for queued dirs and files at the client level!
-        #if work_type in ['dir', 'partial_dir']:
-        #  self.stats['queued_dirs'] -= 1
-        #elif work_type == 'file':
-        #  self.stats['queued_files'] -= 1
-        return_items.append(work_item)
-      self._send_server({'cmd': 'work_items', 'data': return_items})
-    else:
-      # Check and retrieve work items from workers if not all workers are active
-      self._get_worker_work_items()
-    
   def _get_worker_stats(self):
     """
     Fill in docstring
@@ -476,63 +373,17 @@ class HydraClient(object):
     # them return work items
     try:
       num_idle_workers = 0
-      processing_workers = []
       self.log.debug("Checking for idle workers")
-      for k in self.workers.keys():
-        worker_state = self.workers.get(k, {})['state']
-        self.log.debug("Current worker state: %s - %s"%(k, worker_state))
-        if worker_state == 'processing' or worker_state == 'paused':
-          processing_workers.append(k)
-        elif worker_state == 'idle':
-          num_idle_workers += 1
+      idle, processing = self._get_idle_working_worker_keys()
+      num_idle_workers = len(idle)
       if len(self.work_queue) < num_idle_workers:
-        for w in processing_workers:
+        for w in processing:
           self.log.debug("Requesting active worker to return work: %s"%w)
           self.workers[w]['obj'].send({'op': 'return_work'})
       else:
         self.log.debug("Existing work queue items sufficient to send to idle workers")
     except Exception as e:
       self.log.exception(e)
-    
-  def _set_client_state(self, next_state):
-    """
-    Fill in docstring
-    """
-    old_state = self.state
-    # TODO: This should be done in a state machine
-    if old_state == 'shutdown_pending' or old_state == 'shutdown':
-      if next_state != 'shutdown_pending' and next_state != 'shutdown':
-        self.log.debug("Cannot change state out of shutdown pending or shutdown to: %s"%next_state)
-        next_state = self.state
-    self.state = next_state
-    if (old_state != next_state):
-      self.log.debug("Client state change %s -> %s"%(old_state, next_state))
-      self._send_server({'cmd': 'state', 'state': self.state, 'prev_state': old_state})
-    return old_state
-
-  def _update_client_state(self):
-    """
-    Fill in docstring
-    """
-    try:
-      old_state = self.state
-      idle = 0
-      not_idle = 0
-      for w in self.workers:
-        if self.workers[w]['state'] == 'idle' or self.workers[w]['state'] == 'initializing':
-          idle += 1
-        else:
-          not_idle += 1
-      if not_idle > 0:
-        next_state = 'processing'
-      else:
-        next_state = 'idle'
-        self._send_server_stats()
-      self.log.debug("Idle workers: %s, Non-idle workers: %s, Num workers: %s"%(idle, not_idle, self.num_workers))
-      self._set_client_state(next_state)
-    except Exception as e:
-      self.log.exception(e)
-      raise
     
   def _heartbeat(self, idle_count):
     """
@@ -541,8 +392,8 @@ class HydraClient(object):
     self.log.debug("Heartbeat count: %d, idle count: %d"%(self.heartbeat_count, idle_count))
     # First check if we need to shutdown this client
     self.log.debug("Checking for shutdown state: %s"%self.state)
-    if self.state == "shutdown_pending" and idle_count > self.max_shutdown_idle_interval:
-      self._set_client_state('shutdown')
+    if self.state == "shutdown_pending" and idle_count > self.idle_shutdown_interval:
+      self._set_state('shutdown')
       return
     # Check and retrieve work items from workers if not all workers are active
     self._get_worker_work_items()
@@ -551,7 +402,18 @@ class HydraClient(object):
     self._process_dirs()
     # Request worker stats if required
     if self.heartbeat_count%self.stats_heartbeat_interval == 0:
+      self._send_server_stats()
       self._get_worker_stats()
+    
+  def _init_worker_state(self, worker):
+    """
+    Fill in docstring
+    """
+    self.workers[worker.name] = {
+      'obj': worker,
+      'state': 'initializing',
+      'stats': {},
+    }
     
   def _process_command(self, cmd):
     """
@@ -574,23 +436,215 @@ class HydraClient(object):
       if not self.handle_extended_server_cmd(cmd):
         self.log.warn("Unhandled server command: %s"%cmd)
       
+  def _process_dirs(self):
+    """
+    Fill in docstring
+    """
+    idle, processing = self._get_idle_working_worker_keys()
+    queue_len = len(self.work_queue)
+    if (queue_len == 0) or (len(idle) == 0):
+      return
+    self.log.log(5, 'Work Q len: %d, Idle: %d'%(queue_len, len(idle)))
+    split = 0
+    # We want to use an algorithm to fairly distribute work among all the
+    # workers. The goal is to have as little message passing between the workers
+    # as possible. We want to try and send more than 1 path to process per
+    # worker whenever possible to lower message passing overhead as long as
+    # there is enough work to send more than 1 per worker.
+    #
+    # If we have fewer queued work items compared to idle workers, just send
+    # each worker 1 work item until we run out
+    split = (queue_len)//(len(idle))
+    if split > self.dirs_per_idle_worker:
+      split = self.dirs_per_idle_worker
+    elif split <= 0:
+      split = 1
+    self.log.log(5, 'Work split: %d'%split)
+    for k in self.workers.keys():
+      if self.workers.get(k, {})['state'] == 'idle':
+        work_items = []
+        for i in range(split):
+          try:
+            item = self.work_queue.popleft()
+            work_items.append(item['path'])
+          except:
+            break
+        if work_items:
+          self.log.debug("Sending idle worker: %s directories: %s"%(k, work_items))
+          self.workers[k]['obj'].send({'op': 'proc_dir', 'dirs': work_items})
+  
+  def _process_returned_work(self, msg):
+    """
+    Fill in docstring
+    """
+    for i in msg.get('data', []):
+      if i['type'] == 'dir':
+        self._queue_work_paths(i['path'])
+      elif i['type'] == 'partial_dir':
+        # TODO: Need to support partial work path
+        self.log.critical('Partial work path returned. This is currently not supported. Partial data:\n%s'%i)
+      else:
+        self.log.warn("Unknown work item returned: %s"%i)
+        
+  def _process_worker_command(self, worker, cmd):
+    """
+    Fill in docstring
+    """
+    op = cmd.get('op', None)
+    if op == 'state':
+      old_state = self._process_worker_state(cmd['id'], cmd['data'])
+    elif op == 'work_items':
+      self._process_returned_work(cmd)
+    elif op == 'stats':
+      self._process_worker_stats(cmd)
+    else:
+      if not self.handle_extended_worker_msg(cmd):
+        self.log.warn("Client got unexpected cmd from worker: %s"%worker)
+  
+  def _process_worker_state(self, worker_id, state):
+    """
+    Fill in docstring
+    """
+    old_state = None
+    worker = self.workers.get(worker_id, self.shutdown_pending.get(worker_id, None))
+    if worker:
+      old_state = worker['state']
+      if state in HydraUtils.HYDRA_WORKER_STATES.values():
+        worker['state'] = state
+      else:
+        self.log.error("Invalid HydraWorker state update received for worker: %s:%s"%(state, worker_id))
+    self.log.debug("Worker %s state change: %s --> %s"%(worker_id, old_state, state))
+    if state == 'shutdown':
+      self.log.debug("Worker shutdown complete")
+      self._cleanup_worker(worker_id)
+      if (self.get_num_workers() < 1) and (len(self.shutdown_pending) == 0):
+        self._send_server_stats()
+        self._set_state('shutdown')
+        self._shutdown(type='immediate')
+    if state == 'idle':
+      if old_state != 'idle':
+        self.log.log(5, 'Idle worker triggering process_dirs')
+        self._process_dirs()
+    self._update_client_state()
+    return old_state
+  
+  def _process_worker_stats(self, msg):
+    """
+    Save the stats object the worker sends without processing immediately.
+    Stats will be consolidated only when needed to save computation time
+    """
+    self.log.debug("Process worker stats: %s"%msg)
+    k = msg.get('id')
+    worker = self.workers.get(k, self.shutdown_pending.get(k, None))
+    if worker:
+      worker['stats'] = msg.get('data')
+      
+  def _queue_work_paths(self, paths):
+    """
+    Fill in docstring
+    """
+    if not isinstance(paths, (list, tuple)):
+      paths = [paths]
+    for path in paths:
+      if not path:
+        continue
+      self.work_queue.append({'type': 'dir', 'path': path})
+  
+  def _return_server_work(self, divisor=2):
+    """
+    Use simple algorithm by returning roughly half of our work items
+    """
+    return_queue = len(self.work_queue)//divisor
+    if return_queue > 0:
+      return_items = []
+      for i in range(return_queue):
+        work_item = self.work_queue.pop()
+        work_type = work_item.get('type', None)
+        return_items.append(work_item)
+      self._send_server({'cmd': 'work_items', 'data': return_items})
+    else:
+      # Check and retrieve work items from workers if not all workers are active
+      self._get_worker_work_items()
+    
+  def _send_server(self, msg):
+    """
+    Fill in docstring
+    """
+    self.log.debug("Sending server message: %s"%msg)
+    try:
+      if self.server:
+        HydraUtils.socket_send(self.server, msg)
+      else:
+        self.log.info("Request to send server message with a closed server connection: %s"%msg)
+    except Exception as e:
+      if e.errno == errno.EPIPE or e.errno == errno.ECONNRESET:
+        # Pipe to server broken, shut ourselves down
+        self.log.error('Connection to server unexpectedly closed. Shutting down client')
+      self._shutdown('immediate')
+      self.log.exception(e)
+      
+  def _send_server_stats(self):
+    """
+    Fill in docstring
+    """
+    self.consolidate_stats()
+    self._send_server({'cmd': 'stats', 'stats': self.stats})
+    
+  def _set_state(self, next_state):
+    """
+    Fill in docstring
+    """
+    old_state = self.state
+    if old_state == 'shutdown_pending' or old_state == 'shutdown':
+      if next_state != 'shutdown_pending' and next_state != 'shutdown':
+        self.log.debug("Cannot change state out of shutdown pending or shutdown to: %s"%next_state)
+        next_state = self.state
+    self.state = next_state
+    if next_state == 'idle':
+      self._send_server_stats()
+    if (old_state != next_state):
+      self._send_server({'cmd': 'state', 'state': self.state, 'prev_state': old_state})
+      self.log.debug('Client state change: %s ==> %s'%(old_state, next_state))
+    return old_state
+
   def _shutdown(self, type='normal'):
     """
     Fill in docstring
     """
     self.set_workers(0)
-    if type == 'full':
-      if self.server_handle:
-        self.server_handle.close()
-        self.server_handle = None
+    if type == 'immediate':
       if self.server:
         self.inputs.remove(self.server)
-      if self.server:
-        self.server.close()
+        try:
+          self.server.close()
+        except:
+          pass
         self.server = None
-      self._set_client_state('shutdown')
+      self._set_state('shutdown')
     else:
-      self._set_client_state('shutdown_pending')
+      self._set_state('shutdown_pending')
+
+  def _update_client_state(self):
+    """
+    Fill in docstring
+    """
+    try:
+      idle, processing = self._get_idle_working_worker_keys()
+      self.log.log(5, 'Idle worker keys: %s, Processing worker keys: %s'%(idle, processing))
+      if len(processing) > 0:
+        next_state = 'processing'
+      elif (len(idle) > 0) and (len(self.work_queue) > 0):
+        self.log.debug('Some/all workers idle but we have %d queued work items'%len(self.work_queue))
+        next_state = 'processing'
+      elif (len(idle)) == self.num_workers:
+        next_state = 'idle'
+      else:
+        next_state = self.state
+      self.log.debug("Idle workers: %s, Non-idle workers: %s, Num workers: %s"%(len(idle), len(processing), self.num_workers))
+      self._set_state(next_state)
+    except Exception as e:
+      self.log.exception(e)
+      raise
 
 
 class HydraClientProcess(multiprocessing.Process):
@@ -602,24 +656,28 @@ class HydraClientProcess(multiprocessing.Process):
       raise Exception('Missing "port" argument')
     if 'file_handler' not in args:
       raise Exception('Missing "file_handler" argument')
-    if 'handler' in args:
-      self.handler = args['handler']
-    else:
-      self.handler = HydraClient
-    self.server_addr = args['svr']
-    self.server_port = args['port']
-    self.file_handler = args['file_handler']
-    self.file_handler_args = args.get('file_handler_args', {})
+    self.args = dict(args)
+    self.handler = self.args.get('handler', HydraClient)
+    self.server_addr = self.args['svr']
+    self.server_port = self.args['port']
+    self.file_handler = self.args['file_handler']
     self.num_workers = 0
     self.client = None
     
+  def init_process_logging(self):
+    if len(logging.getLogger().handlers) == 0:
+      if self.args.get('logger_cfg'):
+        logging.config.dictConfig(self.args['logger_cfg'])
+  
   def set_workers(self, num_workers=0):
     '''Number of worker processes per client. A value of 0 lets the client
     automatically adjust to the number of CPU cores'''
     self.num_workers = num_workers
     
   def run(self):
-    self.client = self.handler(self.file_handler, self.file_handler_args)
+    self.init_process_logging()
+    self.client = self.handler(self.file_handler, self.args)
+    logging.getLogger().debug("PID: %d, Process name: %s"%(self.pid, self.name))
     try:
       self.client.connect(self.server_addr, self.server_port)
     except socket.error as e:
@@ -633,5 +691,7 @@ class HydraClientProcess(multiprocessing.Process):
     except Exception as se:
       logging.getLogger().exception(se)
       raise(se)
+    if self.num_workers == 0:
+      self.num_workers = 'auto'
     self.client.set_workers(self.num_workers)
     self.client.serve_forever()

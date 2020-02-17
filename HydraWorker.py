@@ -2,60 +2,6 @@
 """
 Module description here
 """
-import inspect
-import os
-import sys
-import platform
-import time
-import socket
-import select
-import multiprocessing
-import logging
-try:
-   import cPickle as pickle
-except:
-   import pickle
-import zlib
-from collections import deque
-import HydraUtils
-
-try:
-  from os import scandir
-except ImportError:
-  # Figure out which version of scandir to use because we need to
-  # account for the different binaries used.
-  current_file = inspect.getfile(inspect.currentframe())
-  base_path = os.path.dirname(os.path.abspath(current_file))
-  scandir_path = 'scandir_generic'
-  local_os = platform.platform()
-  if 'Linux' in local_os:
-    if 'x86_64' in local_os:
-      scandir_path = 'scandir_linux_x86_64'
-  elif 'Windows' in local_os:
-    scandir_path = 'scandir_windows'
-  elif 'Isilon' in local_os:
-    # OneFS < 8.0 is based on FreeBSD 7.1, the FreeBSD 7.1 scandir
-    # binary is slightly older than the other binaries (scandir v1.5
-    # vs. v1.9) due to the EOSL of FreeBSD 7.1
-    # OneFS >= 8.0 is based on FreeBSD 10
-    # Future version of OneFS will be based on FreeBSD 11
-    if 'OneFS-v8' in local_os:
-      scandir_path = None      
-    else:
-      scandir_path = 'scandir_generic'
-  elif 'FreeBSD' in local_os:
-    if 'FreeBSD-11' in local_os:
-      scandir_path = 'scandir_freebsd11'
-    elif 'FreeBSD-10' in local_os:
-      scandir_path = 'scandir_freebsd10'
-    elif 'FreeBSD-7' in local_os:
-      scandir_path = 'scandir_freebsd7'
-  if scandir_path:
-    sys.path.insert(0, os.path.join(base_path, 'lib', scandir_path))
-    import scandir
-  else:
-    scandir = os
-  
 __title__ = "HydraWoker"
 __version__ = "1.0.0"
 __all__ = ["HydraWorker"]
@@ -93,12 +39,16 @@ completes before we consider the directory completed. This could end up getting
 split over many processes. A simplification would be to require 1 directory
 to be fully processed on a single machine versus having these partial partial
 directories processed over several machines and several processes/machine.
+
+In Python 3.8 consider using shared memory to improve performance between client
+and workers
+
 """
 
 """
 State table
 
-None -> initializing
+<Start state> initializing
 initializing -> idle
 idle -> processing
 idle -> paused
@@ -109,8 +59,65 @@ processing -> shutdown
 paused -> idle
 paused -> processing
 paused -> shutdown
-shutdown -> None
+shutdown <End State>
 """
+import os
+import sys
+import platform
+import time
+import socket
+import select
+import struct
+import multiprocessing
+import logging
+import logging.config
+try:
+   import cPickle as pickle
+except:
+   import pickle
+import zlib
+from collections import deque
+import HydraUtils
+
+try:
+  from os import scandir
+  fswalk = os.walk          # If scandir exists os.walk will use it
+except ImportError:
+  import inspect
+  # Figure out which version of scandir to use because we need to
+  # account for the different binaries used.
+  current_file = inspect.getfile(inspect.currentframe())
+  base_path = os.path.dirname(os.path.abspath(current_file))
+  scandir_path = 'scandir_generic'
+  local_os = platform.platform()
+  if 'Linux' in local_os:
+    if 'x86_64' in local_os:
+      scandir_path = 'scandir_linux_x86_64'
+  elif 'Windows' in local_os:
+    scandir_path = 'scandir_windows'
+  elif 'Isilon' in local_os:
+    # OneFS < 8.0 is based on FreeBSD 7.1, the FreeBSD 7.1 scandir
+    # binary is slightly older than the other binaries (scandir v1.5
+    # vs. v1.9) due to the EOSL of FreeBSD 7.1
+    # OneFS >= 8.0 is based on FreeBSD 10
+    # Future version of OneFS will be based on FreeBSD 11
+    if 'OneFS-v8' in local_os:
+      scandir_path = None
+    else:
+      scandir_path = 'scandir_generic'
+  elif 'FreeBSD' in local_os:
+    if 'FreeBSD-11' in local_os:
+      scandir_path = 'scandir_freebsd11'
+    elif 'FreeBSD-10' in local_os:
+      scandir_path = 'scandir_freebsd10'
+    elif 'FreeBSD-7' in local_os:
+      scandir_path = 'scandir_freebsd7'
+  if scandir_path:
+    sys.path.insert(0, os.path.join(base_path, 'lib', scandir_path))
+    import scandir
+  else:
+    scandir = os
+  fswalk = scandir.walk
 
 
 class HydraWorker(multiprocessing.Process):
@@ -120,13 +127,17 @@ class HydraWorker(multiprocessing.Process):
     """
     super(HydraWorker, self).__init__()
     self.log = logging.getLogger(__name__)
-    self.manager_pipe, self.worker_pipe = multiprocessing.Pipe()
-    # Sockets from which we expect to read from through a select call
-    self.inputs = [self.manager_pipe]
-    self.work_queue = deque()
-    self.state = 'initializing'
+    self.args = dict(args)
+    self.loopback_addr = args.get('loopback_addr', HydraUtils.LOOPBACK_ADDR)
+    self.loopback_port = args.get('loopback_port', HydraUtils.LOOPBACK_PORT)
+    self.client_conn = None             # Sockets used to communicate between the client and worker
+    self.worker_conn = None             # Sockets used to communicate between the client and worker
+    self.work_queue = deque()           # Queue used to hold work items
+    self.inputs = []                    # Sockets from which we expect to read from through a select call
     self.stats = {}
+    self.state = 'initializing'
     self.init_stats()
+    self._connect_client()
     
   def filter_subdirectories(self, root, dirs, files):
     """
@@ -198,39 +209,30 @@ class HydraWorker(multiprocessing.Process):
     """
     return False
     
+  def close(self):
+    """
+    Fill in docstring
+    """
+    try:
+      self.send({'op': 'shutdown'})
+    except:
+      pass
+    
+  def fileno(self):
+    """
+    We return the fileno of the loopback socket so the object itself can be
+    used in a select statement.
+    """
+    if self.client_conn:
+      return self.client_conn.fileno()
+    return None
+    
   def init_stats(self):
     """
     Fill in docstring
     """
     for s in HydraUtils.BASIC_STATS:
       self.stats[s] = 0
-    
-  def cleanup(self, forced=False):
-    """
-    Fill in docstring
-    """
-    try:
-      if not forced:
-        self.log.log(9, "Returning work items")
-        self._return_work_items(divisor=1)
-        self.log.log(9, "Returning stats")
-        self._return_stats()
-        self.log.log(9, "Sending shutdown complete")
-        self._send_manager('status_shutdown_complete')
-      self.worker_pipe.close()
-      self.manager_pipe.close()
-    except Exception as e:
-      self.log.exception(e)
-      
-  def send(self, data):
-    """
-    A HydraClient can use this method to send commands to the worker
-    """
-    try:
-      x = self.worker_pipe.send(data)
-    except Exception as e:
-      self.log.exception(e)
-    return x
     
   def recv(self, timeout=-1, convert=True):
     """
@@ -244,11 +246,19 @@ class HydraWorker(multiprocessing.Process):
     pipe is closed and there is no data in the pipe
     """
     if timeout >= 0:
-      status = self.worker_pipe.poll(timeout)
-      if status is False:
-        return status
-    data = self.worker_pipe.recv()
-    # Decode the data before returning to the caller
+      readable, _, _ = select.select([self.client_conn], [], [], timeout)
+      if not readable:
+        return False
+    msg_size = self.client_conn.recv(4)
+    if len(msg_size) != 4:
+      return b''
+    try:
+      data_len = struct.unpack('!L', msg_size)[0]
+      data = HydraUtils.socket_recv(self.client_conn, data_len)
+    except Exception as e:
+      self.log.exception(e)
+      return b''
+    
     if convert:
       if 'format' in data:
         if data['format'] == 'zpickle':
@@ -259,36 +269,180 @@ class HydraWorker(multiprocessing.Process):
           data['format'] = 'dict'
     return data
     
-  def poll(self, timeout=0):
+  def send(self, data):
+    """
+    A HydraClient can use this method to send commands to the worker
+    """
+    try:
+      HydraUtils.socket_send(self.client_conn, data)
+    except Exception as e:
+      self.log.exception(e)
+      return False
+    return True
+    
+  def run(self):
     """
     Fill in docstring
     """
-    return self.worker_pipe.poll(timeout)
+    self._init_process_logging()
+    self.log.debug("PID: %d, Process name: %s"%(self.pid, self.name))
+    wait_count = 0
+    forced_shutdown = False
+    while self._get_state() != 'shutdown':
+      readable = []
+      exceptional = []
+      try:
+        self.log.log(5, "Waiting on select")
+        readable, _, exceptional = select.select(self.inputs, [], self.inputs, wait_count)
+        self.log.log(5, "Select returned")
+      except KeyboardInterrupt:
+        self.log.debug("Caught keyboard interrupt waiting for event")
+        break
+
+      # Handle inputs
+      for s in readable:
+        if s is self.worker_conn:
+          msg_size = s.recv(4)
+          if len(msg_size) != 4:
+            continue
+          data_len = struct.unpack('!L', msg_size)[0]
+          data = HydraUtils.socket_recv(s, data_len)
+          if len(data) > 0:
+            self.log.log(9, "Worker got data: %r"%data)
+            op = data.get('op', None)
+            if op == 'proc_dir':
+              self._queue_dirs(data)
+            elif op == 'proc_work':
+              self._queue_work(data)
+            elif op == 'return_work':
+              self._return_work_items()
+            elif op == 'return_stats':
+              self._return_stats(data.get('data', None))
+            elif op == 'return_state':
+              self._return_state()
+            elif op == 'pause':
+              self._set_state('paused')
+            elif op == 'resume':
+              self._set_state('idle')
+            elif op == 'shutdown':
+              self.log.debug("Shutdown request received for (%s)"%self.name)
+              self._set_state('shutdown')
+              continue
+            elif op == 'force_shutdown':
+              forced_shutdown = True
+              self._set_state('shutdown')
+              continue
+            else:
+              if not self.handle_extended_ops(data):
+                self.log.warn("Unknown command received: %r"%data)
+          else:
+            self.log.error("Input ready but no data received")
+      
+      # Handle exceptions
+      for s in exceptional:
+        self.log.critical('Handling exceptional condition for %r'%s)
+      
+      # This section decides when to do the actual processing of the file
+      # structure.
+      # If the current state is 'pause' then we skip processing until we get a
+      # 'resume' request.
+      # If the current state is 'shutdown' we skip processing, exit and cleanup.
+      # All other states will perform processing. The way this works is we walk
+      # a single directory and get the files and any subdirectories. If the
+      # processing does any work we will go to the 'processing' state. If no
+      # work is done then we move to the 'idle' state.
+      # While in the 'idle' or 'pause' state, each iteration increments a
+      # counter which slows down the polling interval used by the select
+      # statement above. This is done to prevent the poll from consuming too
+      # many resources when it is idle for a long period of time.
+      if self._get_state() == 'shutdown':
+        break
+      elif self._get_state() == 'paused':
+        if wait_count < HydraUtils.LONG_WAIT_THRESHOLD:
+          wait_count += HydraUtils.SHORT_WAIT_TIMEOUT
+      else:
+        # After handling any messages, try to process our work queue
+        try:
+          handled = self._process_work_queue()
+          if handled:
+            wait_count = 0
+          else:
+            if wait_count < HydraUtils.LONG_WAIT_THRESHOLD:
+              wait_count += HydraUtils.SHORT_WAIT_TIMEOUT
+        except KeyboardInterrupt:
+          self._set_state('shutdown')
+          break
+        except Exception as e:
+          self.log.exception(e)
+    # Perform cleanup operations before the process terminates
+    self._cleanup(forced=forced_shutdown)
+    self.log.debug("Ending PID: %d, Process name: %s"%(self.pid, self.name))
     
-  def close(self):
+  #
+  # Internal methods
+  #
+  def _cleanup(self, forced=False):
     """
     Fill in docstring
     """
     try:
-      self.send({'op': 'shutdown'})
-    except:
-      pass
-    self.worker_pipe.close()
-    self.manager_pipe.close()
-    
-  def fileno(self):
+      if not forced:
+        self.log.log(9, "Returning work items")
+        self._return_work_items(divisor=1)
+        self.log.log(9, "Returning stats")
+        self._return_stats()
+        self.log.log(9, "Sending shutdown complete")
+        self._send_client('state', 'shutdown')
+      if self.client_conn:
+        self.client_conn.close()
+        self.client_conn = None
+      if self.worker_conn:
+        self.worker_conn.close()
+        self.worker_conn = None
+    except Exception as e:
+      self.log.exception(e)
+  
+  def _connect_client(self):
+    # Create temporary socket to listen for client<->worker connection
+    listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listen_sock.bind((self.loopback_addr, self.loopback_port))
+    self.loopback_port = listen_sock.getsockname()[1]
+    listen_sock.listen(1)
+    # Create connection between client<->worker and exchange secret
+    self.worker_conn = socket.create_connection((self.loopback_addr, self.loopback_port))
+    self.worker_conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+    self.client_conn, _ = listen_sock.accept()
+    # Close the listening socket as we no longer require it
+    listen_sock.close()
+    secret = HydraUtils.create_uuid_secret()
+    self.worker_conn.sendall(secret)
+    security = self.client_conn.recv(len(secret))
+    if security != secret:
+      self.log.warn("Invalid secret exchange for socket connection!")
+    self.inputs.append(self.worker_conn)
+      
+  def _get_state(self):
     """
-    A HydraWorker is based on multiprocessing.Process. When it runs it
-    makes a copy of both the worker_pipe and manager_pipe. The fileno
-    method will be called only by the parent process. The parent
-    process needs to use their end of the worker_pipe to communicate
-    with the child process.
-    
-    We return the fileno of the worker_pipe so the object itself can be
-    used in a select statement.
+    Fill in docstring
     """
-    return self.worker_pipe.fileno()
+    return self.state
     
+  def _get_stats(self, format='dict'):
+    """
+    Fill in docstring
+    """
+    if format == 'pickle':
+      return(pickle.dumps(self.stats, protocol=pickle.HIGHEST_PROTOCOL))
+    elif format == 'zpickle':
+      return(zlib.compress(pickle.dumps(self.stats, protocol=pickle.HIGHEST_PROTOCOL)))
+    return self.stats
+    
+  def _init_process_logging(self):
+    if len(logging.getLogger().handlers) == 0:
+      if self.args.get('logger_cfg'):
+        logging.config.dictConfig(self.args['logger_cfg'])
+  
   def _queue_dirs(self, data):
     """
     Fill in docstring
@@ -317,6 +471,23 @@ class HydraWorker(multiprocessing.Process):
         self.stats['queued_files'] += 1
       self.work_queue.append(item)
       
+  def _return_state(self):
+    """
+    Fill in docstring
+    """
+    self._send_client('state', self._get_state())
+    
+  def _return_stats(self, data=None):
+    """
+    Fill in docstring
+    """
+    format = 'zpickle'
+    if data is not None:
+      format = data.get('format', 'pickle')
+    if format not in HydraUtils.HYDRA_OPERATION_FORMATS:
+      format = 'dict'
+    self._send_client('stats', self._get_stats(format), format=format)
+    
   def _return_work_items(self, divisor=2):
     """
     Fill in docstring
@@ -337,82 +508,37 @@ class HydraWorker(multiprocessing.Process):
         elif work_type == 'file':
           self.stats['queued_files'] -= 1
         return_items.append(work_item)
-      self._send_manager('work_items', return_items)
+      self._send_client('work_items', return_items)
     
-  def _return_stats(self, data=None):
+  def _send_client(self, op, data=None, format=None):
     """
     Fill in docstring
     """
-    format = 'zpickle'
-    if data is not None:
-      format = data.get('format', 'pickle')
-    if format not in HydraUtils.HYDRA_OPERATION_FORMATS:
-      format = 'dict'
-    self._send_manager('stats', self._get_stats(format), format=format)
-    
-  def _return_state(self):
-    """
-    Fill in docstring
-    """
-    self._send_manager('state', self._get_state())
-    
-  def _get_stats(self, format='dict'):
-    """
-    Fill in docstring
-    """
-    if format == 'pickle':
-      return(pickle.dumps(self.stats, protocol=pickle.HIGHEST_PROTOCOL))
-    elif format == 'zpickle':
-      return(zlib.compress(pickle.dumps(self.stats, protocol=pickle.HIGHEST_PROTOCOL)))
-    return self.stats
-    
+    self.log.log(5, "Sending to client operation: %s"%op)
+    if format is None:
+      msg = {'op': op, 'id': self.name, 'pid': self.pid, 'data': data}
+    else:
+      msg = {'op': op, 'id': self.name, 'pid': self.pid, 'data': data, 'format': format}
+    HydraUtils.socket_send(self.worker_conn, msg)
+      
   def _set_state(self, state):
     """
     Fill in docstring
     """
     old_state = self.state
     if old_state != state:
-      if state is 'idle':
-        # Notify master of our idle state
-        if old_state == 'processing':
-          self._return_stats()
-        self._send_manager('status_idle')
-      elif state is 'processing':
-        # Notify master of our working state
-        self._send_manager('status_processing')
-      elif state is 'paused':
-        # Set state to pause and wait until we get a 'resume' before continuing processing
-        self._send_manager('status_paused')
-      elif state is 'resume':
-        # Allow normal processing loop to move us from 'resume' state to 'idle' or 'processing'
-        pass
-      elif state is 'shutdown':
-        # Actual work is done in the cleanup() method. Do nothing here.
-        pass
+      if state == 'idle' or state == 'shutdown':
+        self._return_stats()
       self.state = state
+      self._return_state()
+      self.log.debug('Worker state change: %s ==> %s'%(old_state, state))
     return old_state
     
-  def _get_state(self):
-    """
-    Fill in docstring
-    """
-    return self.state
-    
-  def _send_manager(self, op, data=None, format=None):
-    """
-    Fill in docstring
-    """
-    self.log.log(8, "Sending to manager: %s"%op)
-    if format is None:
-      self.manager_pipe.send({'op': op, 'id': self.name, 'pid': self.pid, 'data': data})
-    else:
-      self.manager_pipe.send({'op': op, 'id': self.name, 'pid': self.pid, 'data': data, 'format': format})
-      
   def _process_work_queue(self):
     """
     Fill in docstring
     """
-    self.log.log(9, "_process_work_queue invoked")
+    self.log.log(5, "_process_work_queue invoked")
     start_time = time.time()
     temp_work = []
     try:
@@ -433,7 +559,7 @@ class HydraWorker(multiprocessing.Process):
         self.stats['filtered_dirs'] += 1
       else:
         temp_work = []
-        for root, dirs, files in scandir.walk(work_dir):
+        for root, dirs, files in fswalk(work_dir):
           # Filter subdirectories and files by calling the method in the derived class
           before_filter_dirs = len(dirs)
           before_filter_files = len(files)
@@ -507,102 +633,3 @@ class HydraWorker(multiprocessing.Process):
       self.log.error("Unknown work type found in work queue. Queued work item: %r"%work_item)
     end_time = time.time()
     return True
-
-  def run(self):
-    """
-    Fill in docstring
-    """
-    self.log.log(9, "PID: %d, Process name: %s"%(self.pid, self.name))
-    wait_count = 0
-    forced_shutdown = False
-    while self._get_state() != 'shutdown':
-      readable = []
-      exceptional = []
-      try:
-        self.log.log(9, "Waiting on select")
-        readable, _, exceptional = select.select(self.inputs, [], self.inputs, wait_count)
-        self.log.log(9, "Select returned")
-      except KeyboardInterrupt:
-        self.log.debug("Caught keyboard interrupt waiting for event")
-        self._set_state('shutdown')
-        continue
-
-      # Handle inputs
-      for s in readable:
-        if s is self.manager_pipe:
-          data = s.recv()
-          if len(data) > 0:
-            self.log.log(9, "Worker got data: %r"%data)
-            op = data.get('op', None)
-            if op == 'proc_dir':
-              self._queue_dirs(data)
-            elif op == 'proc_work':
-              self._queue_work(data)
-            elif op == 'return_work':
-              self._return_work_items()
-            elif op == 'return_stats':
-              self._return_stats(data.get('data', None))
-            elif op == 'return_state':
-              self._return_state()
-            elif op == 'pause':
-              self._set_state('paused')
-            elif op == 'resume':
-              self._set_state('idle')
-            elif op == 'shutdown':
-              self.log.debug("Shutdown request received for (%s)"%self.name)
-              self._set_state('shutdown')
-              continue
-            elif op == 'force_shutdown':
-              forced_shutdown = True
-              self._set_state('shutdown')
-              continue
-            else:
-              if not self.handle_extended_ops(data):
-                self.log.warn("Unknown command received: %r"%data)
-          else:
-            self.log.error("Input ready but no data received")
-        else:
-          data = s.recv()
-          self.log.warn("Worker got unexpected data: %r"%data)
-      
-      # Handle exceptions
-      for s in exceptional:
-        self.log.critical('Handling exceptional condition for %r'%s)
-      
-      # This section decides when to do the actual processing of the
-      # file structure.
-      # If the current state is 'pause' then we skip processing until
-      # we get a 'resume' request.
-      # If the current state is 'shutdown' we skip processing and exit
-      # and perform cleanup.
-      # All other states will perform processing. The way this works
-      # is we walk a single directory and get the files and any
-      # subdirectories. If the processing does any work we will go to
-      # the 'processing' state. If no work is done then we move to the
-      # 'idle' state.
-      # While in the 'idle' or 'pause' state, each iteration increments
-      # a counter which slows down the polling interval used by the
-      # select statement above. This is done to prevent the poll from
-      # consuming too many resources when it is idle for a long period
-      # of time.
-      if self._get_state() == 'shutdown':
-        break
-      elif self._get_state() == 'paused':
-        if wait_count < HydraUtils.LONG_WAIT_THRESHOLD:
-          wait_count += HydraUtils.SHORT_WAIT_TIMEOUT
-      else:
-        # After handling any messages, try to process our work queue
-        try:
-          handled = self._process_work_queue()
-          if handled:
-            wait_count = 0
-          else:
-            if wait_count < HydraUtils.LONG_WAIT_THRESHOLD:
-              wait_count += HydraUtils.SHORT_WAIT_TIMEOUT
-        except KeyboardInterrupt:
-          self._set_state('shutdown')
-          break
-        except Exception as e:
-          self.log.exception(e)
-    # Perform cleanup operations before the process terminates
-    self.cleanup(forced=forced_shutdown)
