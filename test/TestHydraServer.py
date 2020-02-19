@@ -146,7 +146,7 @@ class TestHydraServer(unittest.TestCase):
     cls.rand_buffer = None
     cls = None
 
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_1_spawn_server_and_shutdown(self):
     svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
@@ -159,7 +159,7 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
 
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_2_single_client_connection_and_shutdown(self):
     svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
@@ -180,7 +180,7 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
   
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_3_multiple_client_connection_and_shutdown(self):
     svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
@@ -203,7 +203,7 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
       
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_4_single_client_single_dir(self):
     svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
@@ -260,7 +260,7 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
 
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_5_multiple_client_2_worker_multiple_dir(self):
     svr = HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()

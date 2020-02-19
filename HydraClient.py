@@ -78,7 +78,7 @@ class HydraClient(object):
     self.log = logging.getLogger(__name__)
     self.log_svr = None
     self.log_addr = HydraUtils.LOOPBACK_ADDR
-    self.log_port = 0
+    self.log_port = HydraUtils.LOOPBACK_PORT
     self.log_secret = None
     self.heartbeat_interval = args.get('heartbeat_interval', HydraUtils.HEARTBEAT_INTERVAL)                   # Seconds for each heartbeat
     self.idle_shutdown_interval = args.get('idle_shutdown_interval', HydraUtils.IDLE_SHUTDOWN_THRESHOLD)      # Number of idle heartbeats before forcing a pending shutdown

@@ -151,6 +151,9 @@ LOGGING_CONFIG = {
       #'maxBytes': 10737418240,
       'backupCount': 10,
     },
+    'null': {
+      'class': 'logging.NullHandler',
+    },
   },
   'loggers': {
     # Root logger
@@ -173,7 +176,7 @@ LOGGING_CONFIG = {
     },
     # Audit log output
     'audit': {
-      'handlers': ['audit'],
+      'handlers': ['null'],
       'level': 'INFO',
       'propagate': False,
     },
@@ -237,6 +240,7 @@ LOGGING_WORKER_CONFIG = {
 }
 
 
+# Used mainly as a helper for configuring tests
 def config_logger(log_cfg, name, log_level=logging.WARN, file=None):
   c = log_cfg['loggers'].get(name)
   if not c:

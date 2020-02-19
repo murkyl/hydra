@@ -209,6 +209,13 @@ class HydraWorker(multiprocessing.Process):
     """
     return False
     
+  def handle_stats_collection(self):
+    """
+    Called right before stats are sent back to the client.
+    Add any stats filtering or custom processing here.
+    """
+    pass
+    
   def close(self):
     """
     Fill in docstring
@@ -226,6 +233,14 @@ class HydraWorker(multiprocessing.Process):
     if self.client_conn:
       return self.client_conn.fileno()
     return None
+    
+  def init_process(self):
+    """
+    Called by the main loop at the beggining after logging is configured.
+    Place any init routines that are required to be run in the context of the
+    worker process versus the context of the main program here.
+    """
+    pass
     
   def init_stats(self):
     """
@@ -285,6 +300,7 @@ class HydraWorker(multiprocessing.Process):
     Fill in docstring
     """
     self._init_process_logging()
+    self.init_process()
     self.log.debug("PID: %d, Process name: %s"%(self.pid, self.name))
     wait_count = 0
     forced_shutdown = False
@@ -432,6 +448,7 @@ class HydraWorker(multiprocessing.Process):
     """
     Fill in docstring
     """
+    self.handle_stats_collection()
     if format == 'pickle':
       return(pickle.dumps(self.stats, protocol=pickle.HIGHEST_PROTOCOL))
     elif format == 'zpickle':

@@ -142,12 +142,31 @@ class FSAudit(HydraWorker):
     self.stats_init(self.global_stats)
     self.cache = [None]*self.args.get('cache_size')
     self.cache_idx = 0
+    self.db = None
+    self.db_client = None
     
-    #self.db_client = pymongo.MongoClient()
-    #self.db = self.db_client[self.args.get('db_name')]
+    if args.get('db') and args['db'].get('db_type') != None:
+      db_type = args['db']['db_type']
+      self.log.debug("Using DB of type: %s for stats collection"%db_type)
+      if db_type == 'mongodb':
+        if not args['db']['mongodb_name']:
+          self.log.critical('DB type of %s specified without a DB name. Please use --mongodb_name parameter'%db_type)
+          sys.exit(1)
+    else:
+      self.log.debug("No DB type specified. Using in memory stats collection.")
+    
     # You can configure additional loggers by adding new variables and using
     # the correct logger name
     self.audit = logging.getLogger('audit')
+    
+  def init_process(self):
+    if self.args.get('db') and self.args['db'].get('db_type') != None:
+      db_type = self.args['db']['db_type']
+      if db_type == 'mongodb':
+        self.log.debug("Connecting to MongoDB instance")
+        self.db_client = pymongo.MongoClient(self.args['db']['mongodb_host'], self.args['db']['mongodb_port'])
+        self.db = self.db_client[self.args['db']['mongodb_name']]
+        self.log.debug("MongoDB connected")
     
   def stats_init(self, stat_obj):
     stat_obj['hist_file_size_config'] = self.args.get('hist_file_size_config')
@@ -169,11 +188,15 @@ class FSAudit(HydraWorker):
     
   def flush_cache(self):
     if self.cache_idx > 0:
-      #result = db.fsaudit.insert_many(
-      #    self.cache[0:self.cache_idx],
-      #    ordered=False,
-      #    bypass_document_validation=True,
-      #)
+      if self.db:
+        result = self.db.fs_audit.insert_many(
+            self.cache[0:self.cache_idx],
+            ordered=False,
+            bypass_document_validation=True,
+        )
+      else:
+        #TODO: Add in memory stats handling here
+        pass
       self.cache_idx = 0
       
   def filter_subdirectories(self, root, dirs, files):
@@ -231,7 +254,24 @@ class FSAudit(HydraWorker):
     # topn_file_size
     return True
     
+  def handle_stats_collection(self):
+    self.flush_cache()
+    
 class FSAuditProcessor(HydraClient):
+  def __init__(self, worker_class, args={}):
+    super(FSAuditProcessor, self).__init__(worker_class, args)
+    if args.get('db') and args['db'].get('db_type') != None:
+      db_type = args['db']['db_type']
+      if db_type == 'mongodb':
+        if not args['db']['mongodb_name']:
+          self.log.critical('DB type of %s specified without a DB name. Please use --mongodb_name parameter'%db_type)
+          sys.exit(1)
+        self.db_client = pymongo.MongoClient(args['db']['mongodb_host'], args['db']['mongodb_port'])
+        self.db = self.db_client[args['db']['mongodb_name']]
+      else:
+        self.log.critical('Unknown DB type of %s specified.'%db_type)
+        sys.exit(1)
+    
   #def consolidate_stats(self):
   #  print("Client consolidating stats")
   #  super(FSAuditProcessor, self).consolidate_stats()
@@ -257,6 +297,7 @@ def AddParserOptions(parser, raw_cli):
     parser.add_option("--listen",
                       default=None,
                       help="IP address to bind to when run as a server. The default will listen to all interfaces.")
+
     op_group = optparse.OptionGroup(parser, "Processing paths",
                            "Options to add paths for processing.")
     op_group.add_option("--path", "-p",
@@ -271,6 +312,26 @@ def AddParserOptions(parser, raw_cli):
                       help="File name with a CR/LF separated list of paths to process. Any leading or trailing "
                            "whitespace is preserved.")
     parser.add_option_group(op_group)
+
+    op_group = optparse.OptionGroup(parser, "DB options")
+    db_type_choices = ["mongodb"]
+    op_group.add_option("--db_type",
+                      type="choice",
+                      default=None,
+                      choices=db_type_choices,
+                      help="DB type if any to use for storing stats [Choices: %s]"%(','.join(db_type_choices)))
+    op_group.add_option("--mongodb_name",
+                      default=None,
+                      help="Name of the MongoDB database to perform operations")
+    op_group.add_option("--mongodb_host",
+                      default='127.0.0.1',
+                      help="Host of MongoDB instance [Default: %default]")
+    op_group.add_option("--mongodb_port",
+                      type="int",
+                      default=27017,
+                      help="Port of MongoDB instance [Default: %default]")
+    parser.add_option_group(op_group)
+
     op_group = optparse.OptionGroup(parser, "Tuning parameters")
     op_group.add_option("--num_workers", "-n",
                       type="int",
@@ -288,8 +349,9 @@ def AddParserOptions(parser, raw_cli):
     op_group.add_option("--select_poll_interval",
                       type="float",
                       default=HydraUtils.SELECT_POLL_INTERVAL,
-                      help="Polling time in seconds (float) between select calls")
+                      help="Polling time in seconds (float) between select calls [Default: %default]")
     parser.add_option_group(op_group)
+
     op_group = optparse.OptionGroup(parser, "Logging, auditing and debug",
                            "File names support some variable replacement. {pid} will be replaced "
                            "with the PID of the process. {host} will be replaced by the host name of "
@@ -328,6 +390,7 @@ def main():
     print("You must specify running as a server or client")
     sys.exit(1)
 
+  # Setup logging and use the --debug CLI option to set the logging level
   if options.debug > 3:
     log_level = 5
   elif options.debug > 2:
@@ -339,13 +402,13 @@ def main():
   else:
     log_level = logging.WARNING
   logger_config = dict(HydraUtils.LOGGING_CONFIG)
-  # Setup logging and use the --debug CLI option to set the logging level
   HydraUtils.config_logger(logger_config, '', log_level=log_level, file=options.log)
-  #DEL: log = HydraUtils.setup_logger(None, options.log_format, options.debug, options.log)
   # Setup auditing logger. Use this to output results to a separate file than
   # the normal logger
-  #DEL: audit = HydraUtils.setup_logger('audit', options.audit_format, 0, options.audit)
-  HydraUtils.config_logger(logger_config, 'audit', log_level=0, file=options.audit)
+  #DEL: HydraUtils.config_logger(logger_config, 'audit', log_level=0, file=options.audit)
+  if options.audit:
+    logger_config['loggers']['audit']['handlers'] = ['audit']
+    logger_config['handlers']['audit']['file'] = options.audit
   logging.config.dictConfig(logger_config)
   log = logging.getLogger('')
   audit = logging.getLogger('audit')
@@ -358,9 +421,6 @@ def main():
   handler = FSAuditProcessor
   handler_args = {}
   file_handler = FSAudit
-  file_handler_args = {
-      'time_delta': datetime.timedelta(days=20).total_seconds(),
-  }
   if options.server:
     log.info("Starting up the server")
     if len(proc_paths) < 1:
@@ -378,6 +438,12 @@ def main():
           'logger_cfg': logger_config,
           'dirs_per_idle_client': options.dirs_per_client,
           'select_poll_interval': options.select_poll_interval,
+          'db': {
+            'db_type': options.db_type,
+            'mongodb_name': options.mongodb_name,
+            'mongodb_host': options.mongodb_host,
+            'mongodb_port': options.mongodb_port,
+          }
         },
     )
     svr.start()
@@ -433,15 +499,21 @@ def main():
   else:
     log.info("Starting up client")
     client = HydraClientProcess({
+        # Basic arguments
         'svr': options.connect,
         'port': options.port,
         'handler': handler,
-        'handler_args': handler_args,
         'file_handler': file_handler,
-        'file_handler_args': file_handler_args,
+        # Options
         'logger_cfg': logger_config,
         'dirs_per_idle_worker': options.dirs_per_worker,
         'select_poll_interval': options.select_poll_interval,
+        'db': {
+          'db_type': options.db_type,
+          'mongodb_name': options.mongodb_name,
+          'mongodb_host': options.mongodb_host,
+          'mongodb_port': options.mongodb_port,
+        }
     })
     client.set_workers(options.num_workers)
     client.start()
