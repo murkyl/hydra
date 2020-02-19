@@ -76,6 +76,10 @@ class HydraClient(object):
     """
     self.args = dict(args)
     self.log = logging.getLogger(__name__)
+    self.log_svr = None
+    self.log_addr = HydraUtils.LOOPBACK_ADDR
+    self.log_port = 0
+    self.log_secret = None
     self.heartbeat_interval = args.get('heartbeat_interval', HydraUtils.HEARTBEAT_INTERVAL)                   # Seconds for each heartbeat
     self.idle_shutdown_interval = args.get('idle_shutdown_interval', HydraUtils.IDLE_SHUTDOWN_THRESHOLD)      # Number of idle heartbeats before forcing a pending shutdown
     self.dirs_per_idle_worker = args.get('dirs_per_idle_worker', HydraUtils.DIRS_PER_IDLE_WORKER)
@@ -90,6 +94,7 @@ class HydraClient(object):
     self.stats = {}
     self.state = 'initializing'
     self.work_queue = deque()
+    self._init_logger()
     self.init_stats(self.stats)
 
     # Variables dealing with server and worker communication
@@ -181,7 +186,9 @@ class HydraClient(object):
     Fill in docstring
     """
     for w in range(num):
-      worker = self.worker_base_class(self.args)
+      worker_args = dict(self.args)
+      worker_args['logger_config'] = worker_args['logger_worker_config']
+      worker = self.worker_base_class(worker_args)
       self.inputs.append(worker)
       self._init_worker_state(worker)
       self.num_workers += 1
@@ -405,6 +412,30 @@ class HydraClient(object):
       self._send_server_stats()
       self._get_worker_stats()
     
+  def _init_logger(self):
+    self.log_svr = HydraUtils.LogRecordStreamHandler(
+        name=__name__,
+        addr = self.log_addr,
+        port = self.log_port,
+    )
+    self.log_port = self.log_svr.get_port()
+    self.log_secret = self.log_svr.get_secret()
+    # Create a worker logging configuration
+    self.args['logger_worker_config'] = dict(HydraUtils.LOGGING_WORKER_CONFIG)
+    HydraUtils.set_logger_handler_to_socket(
+        self.args['logger_worker_config'],
+        'default',
+        host=self.log_addr,
+        port=self.log_port,
+        secret=self.log_secret,
+    )
+    HydraUtils.set_logger_logger_level(
+        self.args['logger_worker_config'],
+        '',
+        self.log.level,
+    )
+    self.log_svr.start_logger()
+    
   def _init_worker_state(self, worker):
     """
     Fill in docstring
@@ -606,7 +637,7 @@ class HydraClient(object):
       self._send_server({'cmd': 'state', 'state': self.state, 'prev_state': old_state})
       self.log.debug('Client state change: %s ==> %s'%(old_state, next_state))
     return old_state
-
+    
   def _shutdown(self, type='normal'):
     """
     Fill in docstring

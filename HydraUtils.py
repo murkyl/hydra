@@ -9,6 +9,8 @@ __all__ = [
   "create_uuid_secret",
   "get_processing_paths",
   "parse_path_file",
+  "set_logger_handler_to_socket",
+  "set_logger_logger_level",
   "setup_logger",
   "socket_recv",
   "socket_send",
@@ -35,6 +37,7 @@ SOFTWARE."""
 import os
 import sys
 import logging
+import logging.handlers
 import datetime
 import socket
 import uuid
@@ -42,7 +45,11 @@ import pickle
 import struct
 import select
 import threading
-import SocketServer
+try:
+  import socketserver
+except:
+  import SocketServer as socketserver
+
 
 
 MAX_BUFFER_READ_SIZE = 4194304
@@ -162,7 +169,7 @@ LOGGING_CONFIG = {
     '__main__': {
       'handlers': ['default'],
       'level': 'WARN',
-      #'propagate': False,
+      'propagate': False,
     },
     # Audit log output
     'audit': {
@@ -200,6 +207,35 @@ LOGGING_ALT_CONFIG = {
   #  },
   }
 }
+
+LOGGING_WORKER_CONFIG = {
+  'version': 1,
+  'disable_existing_loggers': False,
+  'formatters': {
+    'standard': {
+      'format': '%(asctime)s [%(levelname)s] %(name)s - %(process)d : %(message)s',
+    },
+    'message': {
+      'format': '%(message)s',
+    },
+  },
+  'handlers': {
+    'default': {
+      'formatter': 'standard',
+      'class': 'HydraUtils.SecureSocketHandler',
+      'host': '127.0.0.1',
+      'port': 0,
+      'secret': '',
+    },
+  },
+  'loggers': {
+    '': {
+      'handlers': ['default'],
+      'level': 'WARN',
+    },
+  },
+}
+
 
 def config_logger(log_cfg, name, log_level=logging.WARN, file=None):
   c = log_cfg['loggers'].get(name)
@@ -252,6 +288,17 @@ def parse_path_file(filename):
       paths = [x.rstrip('\n') for x in f.readlines()]
   return paths
 
+def set_logger_handler_to_socket(log_cfg, name='default', host=LOOPBACK_ADDR, port=LOOPBACK_PORT, secret=''):
+  if name not in log_cfg['handlers']:
+    log_cfg['handlers'][name] = {}
+  log_cfg['handlers'][name]['class'] = 'HydraUtils.SecureSocketHandler'
+  log_cfg['handlers'][name]['host'] = host
+  log_cfg['handlers'][name]['port'] = port
+  log_cfg['handlers'][name]['secret'] = secret
+
+def set_logger_logger_level(log_cfg, name='', level=logging.WARN):
+  log_cfg['loggers'][name]['level'] = level
+
 def setup_logger(log_cfg, name, log_level = 0, filename=None):
   """
   Fill in docstring
@@ -302,3 +349,93 @@ def socket_send(sock, data):
   header = struct.pack('!L', bytes_len)
   sock.sendall(header + bytes_data)
   return (bytes_len + 4)
+  
+class LogRecordStreamHandler():
+  def __init__(self, name='', addr='127.0.0.1', port=0, timeout=0.05):
+    self.log_socket = None
+    self.log_port = None
+    self.log_secret = ''
+    self.timeout = timeout
+    self.shutdown = False
+    self.name = name
+    self.server_thread = None
+    self.inputs = []
+    self._setup_log_socket(addr, port)
+    
+  def get_port(self):
+    return self.log_port
+    
+  def get_secret(self):
+    return self.log_secret
+
+  def handle(self):
+    while not self.shutdown and self.inputs:
+      readable, _, _ = select.select(self.inputs, [], [], self.timeout)
+      for s in readable:
+        if s is self.log_socket:
+          connection, client_address = s.accept()
+          connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+          security = connection.recv(len(self.log_secret))
+          if security != self.log_secret:
+            logging.getLogger(self.name).error('Log client did not send proper secret: %s'%client_address)
+            connection.close()
+            continue
+          self.inputs.append(connection)
+        else:
+          msg_size = s.recv(4)
+          if len(msg_size) != 4:
+            self.inputs.remove(s)
+            s.close()
+            continue
+          slen = struct.unpack('>L', msg_size)[0]
+          data = socket_recv(s, slen)
+          record = logging.makeLogRecord(data)
+          logger = logging.getLogger(self.name)
+          logger.handle(record)
+    
+  def start_logger(self):
+    self.server_thread = threading.Thread(target=self.handle, daemon=True)
+    self.server_thread.start()
+  
+  def stop_logger(self):
+    self.shutdown = True
+
+  def _setup_log_socket(self, addr, port):
+    # Create socket to listen for log and audit events from workers.
+    # Workers are in separate processes to avoid GIL issues and the Python
+    # logger is not process safe. It is however thread safe.
+    self.log_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self.log_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    self.log_socket.bind((addr, port))
+    self.log_port = self.log_socket.getsockname()[1]
+    self.log_socket.listen(5)
+    self.log_secret = create_uuid_secret()
+    self.inputs.append(self.log_socket)
+
+class SecureSocketHandler(logging.handlers.SocketHandler):
+  def __init__(self, host=LOOPBACK_ADDR, port=LOOPBACK_PORT, secret='', **kwargs):
+    # To allow simple dictconfig configuration, accept and discard kwargs
+    super(SecureSocketHandler, self).__init__(host, port)
+    self.secret = secret
+
+  # Override of base class makeSocket to send a simple secret value on connect
+  def makeSocket(self, timeout=1):
+    """
+    A factory method which allows subclasses to define the precise
+    type of socket they want.
+    """
+    if self.port is not None:
+      result = socket.create_connection(self.address, timeout=timeout)
+      if result:
+        result.sendall(self.secret)
+    else:
+      result = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+      result.settimeout(timeout)
+      try:
+        result.connect(self.address)
+        if result:
+          result.sendall(self.secret)
+      except OSError:
+        result.close()
+        raise
+    return result

@@ -439,10 +439,21 @@ class HydraWorker(multiprocessing.Process):
     return self.stats
     
   def _init_process_logging(self):
-    if len(logging.getLogger().handlers) == 0:
-      if self.args.get('logger_cfg'):
-        logging.config.dictConfig(self.args['logger_cfg'])
-  
+    if self.args.get('logger_cfg'):
+      logging.config.dictConfig(self.args['logger_cfg'])
+    '''
+    # Having a socket server overrides any configuration 
+    if self.args.get('log_addr') and self.args.get('log_port'):
+      sh = HydraUtils.SecureSocketHandler(
+          self.args.get('log_addr'),
+          self.args.get('log_port'),
+          self.args.get('log_secret')
+      )
+      self.log.setLevel(self.args.get('log_level', logging.WARN))
+      root_logger = logging.getLogger()
+      root_logger.handlers = [sh]
+    '''
+        
   def _queue_dirs(self, data):
     """
     Fill in docstring

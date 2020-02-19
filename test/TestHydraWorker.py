@@ -23,6 +23,7 @@ RANDOM_DATA_BUF_SIZE = 1024*1024*4
 POLL_WAIT_SECONDS = 5
 FILE_DELAY = 1          # Time in seconds
 LOGGER_CONFIG = None
+WORKER_LOGGER_CONFIG = dict(HydraUtils.LOGGING_WORKER_CONFIG)
 
 if __package__ is None:
   # test code is run from the ./test directory.  add the parent
@@ -32,6 +33,7 @@ if __package__ is None:
   sys.path.insert(0, base_path)
 from HydraWorker import HydraWorker
 import HydraUtils
+
 
 """
 This method creates files with random data in them using a single buffer
@@ -108,20 +110,46 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
   def setUp(self):
     self.worker = None
     self.workers = []
+    self.log_svr = None
+    self.log_svr = HydraUtils.LogRecordStreamHandler(
+        name=__name__,
+        addr = WORKER_LOGGER_CONFIG['handlers']['default']['host'],
+        port = 0,
+    )
+    self.log_svr.start_logger()
+    HydraUtils.set_logger_handler_to_socket(
+        WORKER_LOGGER_CONFIG,
+        'default',
+        host=WORKER_LOGGER_CONFIG['handlers']['default']['host'],
+        port=self.log_svr.get_port(),
+        secret=self.log_svr.get_secret()
+    )
+    HydraUtils.set_logger_logger_level(
+        WORKER_LOGGER_CONFIG,
+        '',
+        logging.getLogger().level,
+    )
+    self.worker_args = {
+      'logger_cfg': WORKER_LOGGER_CONFIG,
+    }
+    # Uncomment out to bypass logging via sockets
+    #self.worker_args = {}
 
   def tearDown(self):
     if self.worker:
       self.worker.terminate()
     self.cleanup_workers()
+    if self.log_svr:
+      self.log_svr.stop_logger()
    
   def cleanup_workers(self):
     for worker in self.workers:
       worker.terminate()
     self.workers = []
       
-  #@unittest.skip("Debugging")
+  #@unittest.skip("")
   def test_1_spawn_1_workers_and_timeout_recv(self):
-    self.worker = HydraWorker({'logger_cfg': LOGGER_CONFIG})
+    self.worker = HydraWorker(self.worker_args)
     self.worker.start()
     
     # Grab the initial stats before idle
@@ -139,9 +167,9 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
     self.worker.terminate()
     self.worker = None
   
-  #@unittest.skip("Debugging")
+  #@unittest.skip("")
   def test_2_spawn_1_workers_get_state_and_timeout_recv(self):
-    self.worker = HydraWorker({'logger_cfg': LOGGER_CONFIG})
+    self.worker = HydraWorker(self.worker_args)
     self.worker.start()
     
     # Grab the initial stats before idle
@@ -165,14 +193,14 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
     self.worker.terminate()
     self.worker = None
   
-  #@unittest.skip("Debugging")
+  #@unittest.skip("")
   def test_3_spawn_4_workers_and_shutdown(self):
     sleep_seconds = 1
     num_workers = 4
     
     for i in range(num_workers):
       # Create pipe for client to worker communications
-      worker = HydraWorker({'logger_cfg': LOGGER_CONFIG})
+      worker = HydraWorker(self.worker_args)
       self.workers.append(worker)
       worker.start()
     time.sleep(sleep_seconds)
@@ -200,13 +228,13 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
       self.assertEqual('shutdown', data.get('data'))
     self.cleanup_workers()
       
-  #@unittest.skip("Debugging")
+  #@unittest.skip("")
   def test_4_spawn_4_workers_poll_using_select(self):
     sleep_seconds = 1
     num_workers = 4
     
     for i in range(num_workers):
-      worker = HydraWorker({'logger_cfg': LOGGER_CONFIG})
+      worker = HydraWorker(self.worker_args)
       worker.start()
       self.workers.append(worker)
       
@@ -237,34 +265,68 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
   def setUp(self):
     self.worker = None
     self.workers = []
+    self.log_svr = None
     self.buffer_size = RANDOM_DATA_BUF_SIZE
     random.seed(RANDOM_SEED)
     self.base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
     self.test_path = os.path.join(self.base_path, TEST_PATH)
-    # Check for skip file named 'skip_check' and bypass creation/check if it is present
-    if os.path.isfile(os.path.join(self.test_path, 'skip_check')):
-      return
     logging.getLogger().info("Setting up file structure. This may take time")
-    self.rand_buffer = bytearray(random.getrandbits(8) for x in range(self.buffer_size))
-    for i in range(NUM_DIRS):
-      cur_path = os.path.join(self.test_path, "dir%s"%i)
-      try:
-        os.makedirs(cur_path, exists_ok = True)
-      except:
-        pass
-      create_files(cur_path, FILES_PER_DIR, FILE_SIZE, self.rand_buffer, self.buffer_size)
-      for j in range(NUM_SUBDIRS):
-        sub_path = os.path.join(cur_path, "subdir%s"%j)
+    
+    self.log_svr = HydraUtils.LogRecordStreamHandler(
+        name=__name__,
+        addr = WORKER_LOGGER_CONFIG['handlers']['default']['host'],
+        port = 0,
+    )
+    self.log_svr.start_logger()
+    HydraUtils.set_logger_handler_to_socket(
+        WORKER_LOGGER_CONFIG,
+        'default',
+        host=WORKER_LOGGER_CONFIG['handlers']['default']['host'],
+        port=self.log_svr.get_port(),
+        secret=self.log_svr.get_secret()
+    )
+    HydraUtils.set_logger_handler_to_socket(
+        WORKER_LOGGER_CONFIG,
+        'audit',
+        host=WORKER_LOGGER_CONFIG['handlers']['default']['host'],
+        port=self.log_svr.get_port(),
+        secret=self.log_svr.get_secret()
+    )
+    HydraUtils.set_logger_logger_level(
+        WORKER_LOGGER_CONFIG,
+        '',
+        logging.getLogger().level,
+    )
+    self.worker_args = {
+      'logger_cfg': WORKER_LOGGER_CONFIG,
+    }
+    # Uncomment out to bypass logging via sockets
+    #self.worker_args = {}
+
+    # Check for skip file named 'skip_check' and bypass creation/check if it is present
+    if not os.path.isfile(os.path.join(self.test_path, 'skip_check')):
+      self.rand_buffer = bytearray(random.getrandbits(8) for x in range(self.buffer_size))
+      for i in range(NUM_DIRS):
+        cur_path = os.path.join(self.test_path, "dir%s"%i)
         try:
-          os.makedirs(sub_path)
+          os.makedirs(cur_path, exists_ok = True)
         except:
           pass
-        create_files(sub_path, FILES_PER_DIR, FILE_SIZE)
+        create_files(cur_path, FILES_PER_DIR, FILE_SIZE, self.rand_buffer, self.buffer_size)
+        for j in range(NUM_SUBDIRS):
+          sub_path = os.path.join(cur_path, "subdir%s"%j)
+          try:
+            os.makedirs(sub_path)
+          except:
+            pass
+          create_files(sub_path, FILES_PER_DIR, FILE_SIZE)
 
   def tearDown(self):
     if self.worker:
       self.worker.terminate()
     self.cleanup_workers()
+    if self.log_svr:
+      self.log_svr.stop_logger()
    
   def cleanup_workers(self):
     for worker in self.workers:
@@ -280,7 +342,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
     
     for i in range(num_workers):
       # Create pipe for client to worker communications
-      worker = HydraTestClassSlowFileProcess({'logger_cfg': LOGGER_CONFIG})
+      worker = HydraTestClassSlowFileProcess(self.worker_args)
       worker.start()
       self.workers.append(worker)
   
@@ -349,7 +411,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
 
     try:
       for i in range(num_workers):
-        worker = HydraTestClassSlowFileProcess({'logger_cfg': LOGGER_CONFIG})
+        worker = HydraTestClassSlowFileProcess(self.worker_args)
         worker.start()
         self.workers.append(worker)
         
@@ -416,7 +478,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
     try:
       # Start up all workers
       for i in range(num_workers):
-        worker = HydraTestClassSlowFileProcess({'logger_cfg': LOGGER_CONFIG})
+        worker = HydraTestClassSlowFileProcess(self.worker_args)
         worker.setFileDelay(FILE_DELAY)
         worker.start()
         self.workers.append(worker)
@@ -436,8 +498,9 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         self.assertEqual('idle', data.get('data'))
 
       # Ask worker 0 to start processing
-      logging.getLogger().debug('Asking worker 0 to start processing')
+      logging.getLogger().debug('Asking worker 0 and 1 to start processing')
       self.workers[0].send({'op': 'proc_dir', 'dirs': [work_dirs[0]]})
+
       data = self.workers[0].recv(timeout=POLL_WAIT_SECONDS)
       self.assertIsNot(data, False)
       self.assertEqual('state', data.get('op'))
@@ -511,7 +574,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
     try:
       # Start up all workers
       for i in range(num_workers):
-        worker = HydraTestClassSlowFileProcess({'logger_cfg': LOGGER_CONFIG})
+        worker = HydraTestClassSlowFileProcess(self.worker_args)
         worker.setFileDelay(FILE_DELAY)
         worker.start()
         self.workers.append(worker)
@@ -568,9 +631,11 @@ if __name__ == '__main__':
   elif debug_count > 0:
     log_lvl = logging.DEBUG
   LOGGER_CONFIG = dict(HydraUtils.LOGGING_CONFIG)
+  LOGGER_CONFIG['handlers']['audit']['filename'] = 'test.log'
   HydraUtils.config_logger(LOGGER_CONFIG, '', log_level=log_lvl)
   logging.config.dictConfig(LOGGER_CONFIG)
   root = logging.getLogger('')
+  
 
   suite1 = unittest.TestLoader().loadTestsFromTestCase(TestHydraWorkerSpawnAndShutdown)
   suite2 = unittest.TestLoader().loadTestsFromTestCase(TestHydraWorkerProcessDirectory)
