@@ -153,6 +153,11 @@ class HydraClient(object):
     """
     return False
     
+  def handle_update_settings(self, cmd):
+    """
+    Handle a settings update from the server
+    """
+    return True
     
   def connect(self, server_addr, server_port=HydraUtils.DEFAULT_LISTEN_PORT):
     """
@@ -226,6 +231,26 @@ class HydraClient(object):
       worker_state['obj'].send({'op': 'shutdown'})
       self.shutdown_pending[k] = worker_state
       self.num_workers -= 1
+      
+  def send_active_workers(self, cmd):
+    for set in [self.workers]:
+      for w in set:
+        set[w]['obj'].send(cmd)
+
+  def send_all_workers(self, cmd):
+    for set in [self.workers, self.shutdown_pending]:
+      for w in set:
+        set[w]['obj'].send(cmd)
+
+  def send_worker(self, worker_id, cmd):
+    worker_found = False
+    for set in [self.workers, self.shutdown_pending, self.shutdown_workers]:
+      if worker_id in set:
+        set[worker_id]['obj'].send(cmd)
+        worker_found = True
+        break
+    if not worker_found:
+      self.log.error('Send worker attempted with invalid worker_id: %s'%worker_id)
   
   def serve_forever(self):
     """
@@ -365,12 +390,7 @@ class HydraClient(object):
     """
     Fill in docstring
     """
-    try:
-      for set in [self.workers, self.shutdown_pending]:
-        for w in set:
-          set[w]['obj'].send({'op': 'return_stats'})
-    except Exception as e:
-      self.log.exception(e)
+    self.send_active_workers({'op': 'return_stats'})
       
   def _get_worker_work_items(self):
     """
@@ -386,7 +406,7 @@ class HydraClient(object):
       if len(self.work_queue) < num_idle_workers:
         for w in processing:
           self.log.debug("Requesting active worker to return work: %s"%w)
-          self.workers[w]['obj'].send({'op': 'return_work'})
+          self.send_worker(w, {'op': 'return_work'})
       else:
         self.log.debug("Existing work queue items sufficient to send to idle workers")
     except Exception as e:
@@ -463,6 +483,8 @@ class HydraClient(object):
       self._send_server_stats()
     elif command == "return_work":
       self._return_server_work()
+    elif command == "update_settings":
+      self.handle_update_settings(cmd)
     else:
       if not self.handle_extended_server_cmd(cmd):
         self.log.warn("Unhandled server command: %s"%cmd)
@@ -502,7 +524,7 @@ class HydraClient(object):
             break
         if work_items:
           self.log.debug("Sending idle worker: %s directories: %s"%(k, work_items))
-          self.workers[k]['obj'].send({'op': 'proc_dir', 'dirs': work_items})
+          self.send_worker(k, {'op': 'proc_dir', 'dirs': work_items})
   
   def _process_returned_work(self, msg):
     """

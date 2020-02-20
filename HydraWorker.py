@@ -216,6 +216,12 @@ class HydraWorker(multiprocessing.Process):
     """
     pass
     
+  def handle_update_settings(self, cmd):
+    """
+    Handle a settings update from the client
+    """
+    return True
+    
   def close(self):
     """
     Fill in docstring
@@ -348,6 +354,8 @@ class HydraWorker(multiprocessing.Process):
               forced_shutdown = True
               self._set_state('shutdown')
               continue
+            elif op == 'update_settings':
+              self.handle_update_settings(data)
             else:
               if not self.handle_extended_ops(data):
                 self.log.warn("Unknown command received: %r"%data)

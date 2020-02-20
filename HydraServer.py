@@ -104,6 +104,14 @@ class HydraServer(object):
             self.stats[s] += set[c]['stats'][s]
     except Exception as e:
       self.log.exception(e)
+      
+  def handle_client_connected(self, client):
+    """
+    Called after a client connects to the server.
+    The key to the self.clients array is passed back.
+    This key can be used in the send_client_command to issue a command
+    """
+    return True
 
   def handle_extended_client_cmd(self, cmd):
     """
@@ -128,6 +136,12 @@ class HydraServer(object):
     Return False if the command was not handled. This is the default.
     """
     return False
+    
+  def handle_update_settings(self, cmd):
+    """
+    Handle a settings update from the UI
+    """
+    return True
     
   def fileno(self):
     """
@@ -163,6 +177,17 @@ class HydraServer(object):
       self.log.exception(e)
       return False
     return True
+    
+  def send_client_command(self, client, cmd):
+    """
+    Fill in docstring
+    """
+    c = self.clients.get(client)
+    if c:
+      try:
+        HydraUtils.socket_send(c['conn'], cmd)
+      except Exception as e:
+        self.log.exception(e)
     
   def set_server_connection(self, addr=None, port=None):
     """
@@ -295,18 +320,8 @@ class HydraServer(object):
     self.init_stats(client_obj)
     self.clients[connection] = client_obj
     self.num_clients += 1
+    self.handle_client_connected(connection)
 
-  def _send_client_command(self, client, cmd):
-    """
-    Fill in docstring
-    """
-    c = self.clients.get(client)
-    if c:
-      try:
-        HydraUtils.socket_send(c['conn'], cmd)
-      except Exception as e:
-        self.log.exception(e)
-    
   def _process_client_state(self, client, cmd):
     """
     Fill in docstring
@@ -380,7 +395,7 @@ class HydraServer(object):
     """
     Fill in docstring
     """
-    self._send_client_command(client, {'cmd': 'shutdown'})
+    self.send_client_command(client, {'cmd': 'shutdown'})
     self.log.debug("Shutdown command sent to: :%s"%client)
     
   def _queue_work_paths(self, paths):
@@ -408,7 +423,7 @@ class HydraServer(object):
             self.log.debug("No directories queued for processing. Search for idle clients stopped")
             return
           self.log.debug("Sending idle client (%s) directory: %s"%(k.fileno(), work_item['path']))
-          self._send_client_command(k, {'cmd': 'submit_work', 'paths': [work_item['path']]})
+          self.send_client_command(k, {'cmd': 'submit_work', 'paths': [work_item['path']]})
           clients_sent_work[k] = True
     # Semi-hack to track the fact we have sent work to an idle client 
     for k in clients_sent_work.keys():
@@ -444,7 +459,7 @@ class HydraServer(object):
     """
     cmd = {'cmd': 'return_stats'}
     for c in self.clients:
-      self._send_client_command(c, cmd)
+      self.send_client_command(c, cmd)
     
   def _setup_server(self):
     """
@@ -548,7 +563,7 @@ class HydraServer(object):
       if len(self.work_queue) < num_idle_clients:
         for c in processing_clients:
           self.log.debug("Requesting active client to return work: %s"%c)
-          self._send_client_command(c, {'cmd': 'return_work'})
+          self.send_client_command(c, {'cmd': 'return_work'})
       else:
         if num_idle_clients > 0:
           self.log.debug("Existing work queue items sufficient to send to idle workers")
@@ -580,6 +595,8 @@ class HydraServer(object):
       pass
     elif command == 'pause':
       pass
+    elif command == 'update_settings':
+      self.handle_update_settings(command)
     else:
       if not self.handle_extended_server_cmd(cmd):
         self.log.warn("Unhandled UI command: %s"%cmd)
