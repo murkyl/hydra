@@ -28,7 +28,7 @@ Requirements:
 
 ====================
 Server example usage:
-python %prog -s -p /some/path --date 30 -mtime --purge
+python %prog -s -p /some/path --date 30 --mtime --purge
 
 Search all files under /some/path directory and check if the file mtime (file \
 last modified time) is older than 30 days in the past. If it is then delete \
@@ -36,12 +36,12 @@ the file.
 If the current date is July 20, 1969 (1969-07-20) at 08:00:05, then a setting \
 of --date 30 means that any file before 1969-06-20 at 08:00:05 would be deleted.
 -----
-python %prog -s -p /some/path --date 30 -mtime
+python %prog -s -p /some/path --date 30 --mtime
 
 In this instance, without the --purge option, files will actually be deleted. \
 This mode is like a simulation of what files would be deleted.
 -----
-python %prog -s -p /some/path -p /some/other_path --date 365 -mtime --log server.log
+python %prog -s -p /some/path -p /some/other_path --date 365 --mtime --log server.log
 
 This instance will process 2 directories, /some/path and /some/other_path as \
 well as deleting files that have mtimes older than 1 year ago.
@@ -286,7 +286,7 @@ def AddParserOptions(parser, raw_cli):
 
     # EXAMPLE: Add or alter options specific for your application here
     op_group = optparse.OptionGroup(parser, "Delete file criteria specified for servers")
-    op_group.add_option("--date",
+    op_group.add_option("--date", "-d",
                       help="String the describes at what point in time should a file be considered eligible for deletion."
                           "Currently it only supports the number of days in the past to compare. e.g. 20 or 30 or 365.")
     op_group.add_option("--purge",
