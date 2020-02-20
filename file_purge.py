@@ -21,7 +21,58 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
 SOFTWARE."""
+__usage__="""%prog [options]"""
+__description__="""====================
+Requirements:
+  python 2.7+
 
+====================
+Server example usage:
+python %prog -s -p /some/path --date 30 -mtime --purge
+
+Search all files under /some/path directory and check if the file mtime (file \
+last modified time) is older than 30 days in the past. If it is then delete \
+the file.
+If the current date is July 20, 1969 (1969-07-20) at 08:00:05, then a setting \
+of --date 30 means that any file before 1969-06-20 at 08:00:05 would be deleted.
+-----
+python %prog -s -p /some/path --date 30 -mtime
+
+In this instance, without the --purge option, files will actually be deleted. \
+This mode is like a simulation of what files would be deleted.
+-----
+python %prog -s -p /some/path -p /some/other_path --date 365 -mtime --log server.log
+
+This instance will process 2 directories, /some/path and /some/other_path as \
+well as deleting files that have mtimes older than 1 year ago.
+All program output will be redirected to a file called server.log. This will \
+will be automatically rotated if it exists with up to 10 copies retained. It \
+is therefore safe to re-use the same log file name.
+
+
+Once a server instance is running. You need to connect one or more clients to \
+start file processing. The clients can be located on the same machines as the \
+server or it can be located on other machines. There is an assumption that the \
+paths that are passed to the server instance will be reachable by all the \
+clients via the same path.
+
+====================
+Client example usage:
+python %prog -c 127.0.0.1
+
+This is the simplest invocation of the client. The client will connect to a \
+server running on the local machine.
+-----
+python %prog -c 192.168.42.42
+
+This invocation will connect to a server running at IP 192.168.42.42
+-----
+python %prog -c 192.168.42.42 --audit audit.log
+
+Connect to a server running on 192.168.42.42 and write any audit events to the \
+file named audit.log. This file will be created on the machine that is running \
+the client and in the current working directory.
+"""
 
 import os
 import sys
@@ -299,7 +350,12 @@ def main():
   cli_options = sys.argv[1:]
     
   # Create our command line parser. We use the older optparse library for compatibility on OneFS
-  parser = optparse.OptionParser(version="%prog "+__version__)
+  parser = optparse.OptionParser(
+      usage=__usage__,
+      description=__description__,
+      version=__version__,
+      formatter=HydraUtils.IndentedHelpFormatterWithNL(),
+  )
   # Create main CLI parser
   AddParserOptions(parser, cli_options)
   (options, args) = parser.parse_args(cli_options)

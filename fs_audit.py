@@ -377,7 +377,7 @@ def main():
   cli_options = sys.argv[1:]
     
   # Create our command line parser. We use the older optparse library for compatibility on OneFS
-  parser = optparse.OptionParser(version="%prog "+__version__)
+  parser = optparse.OptionParser(version=__version__)
   # Create main CLI parser
   AddParserOptions(parser, cli_options)
   (options, args) = parser.parse_args(cli_options)
