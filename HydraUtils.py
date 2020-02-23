@@ -128,6 +128,9 @@ LOGGING_CONFIG = {
     'standard': {
       'format': '%(asctime)s [%(levelname)s] %(name)s - %(process)d : %(message)s',
     },
+    'debug': {
+      'format': '%(asctime)s [%(levelname)s] %(name)s [%(funcName)s (%(lineno)d)] - %(process)d : %(message)s',
+    },
     'message': {
       'format': '%(message)s',
     },
@@ -271,13 +274,17 @@ def config_logger(log_cfg, name, log_level=logging.WARN, file=None):
         log_cfg['handlers']['file']['filename'] = file
 
 def create_uuid_secret():
-    return bytes(SECRET_PREFIX + str(uuid.uuid4()) + SECRET_SUFFIX, encoding='utf-8')
+  if type(b'1') is str:
+    return bytearray(SECRET_PREFIX + str(uuid.uuid4()) + SECRET_SUFFIX)
+  return bytes(SECRET_PREFIX + str(uuid.uuid4()) + SECRET_SUFFIX, encoding='utf-8')
     
-def get_processing_paths(path_array, path_file):
+def get_processing_paths(path_array, path_file=None):
   """
   Fill in docstring
   """
   path_files = parse_path_file(path_file)
+  if not isinstance(path_array, list):
+    path_array = [path_array]
   if not path_array:
     path_array = []
   all_paths = path_array + path_files
@@ -455,7 +462,8 @@ class LogRecordStreamHandler():
           logger.handle(record)
     
   def start_logger(self):
-    self.server_thread = threading.Thread(target=self.handle, daemon=True)
+    self.server_thread = threading.Thread(target=self.handle)
+    self.server_thread.daemon = True
     self.server_thread.start()
   
   def stop_logger(self):

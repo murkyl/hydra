@@ -59,6 +59,8 @@ class HydraServer(object):
     self.stats_heartbeat_interval = args.get('stats_heatbeat_interval', HydraUtils.STATS_HEARTBEAT_INTERVAL)  # Number of heartbeat intervals per client stat update
     self.heartbeat_count = 1
     self.num_clients = 0
+    self.last_consolidate_stats = 0
+    self.last_client_stat_update = 0
     self.clients = {}                 # Connected client list
     self.shutdown_clients = {}        # List of clients that have been shutdown. Used for statistics
     self.stats = {}
@@ -92,8 +94,11 @@ class HydraServer(object):
     """
     This method is called to consolidate all the client stats into a single
     coherent stats object.
-    This method can be overridden in order to handle custom statistics
+    Returns: the stats object that should be used after processing.
+    This method can be overridden in order to handle custom statistics.
     """
+    if self.last_client_stat_update <= self.last_consolidate_stats:
+      return self.stats
     try:
       self.init_stats(self.stats)
       for set in [self.clients, self.shutdown_clients]:
@@ -104,6 +109,8 @@ class HydraServer(object):
             self.stats[s] += set[c]['stats'][s]
     except Exception as e:
       self.log.exception(e)
+      self.last_consolidate_stats = time.time()
+    return self.stats
       
   def handle_client_connected(self, client):
     """
@@ -354,6 +361,7 @@ class HydraServer(object):
     # Stats will be consolidated only when needed to save computation time
     self.log.debug("Process client (%s) stats: %s"%(client.fileno(), cmd))
     self.clients[client]['stats'] = cmd.get('stats')
+    self.last_client_stat_update = time.time()
       
   def _process_client_command(self, client, cmd):
     """
@@ -441,17 +449,17 @@ class HydraServer(object):
     """
     Fill in docstring
     """
-    self.consolidate_stats()
+    send_stats = self.consolidate_stats()
     if cmd.get('data', 'simple') == 'simple':
-      self.log.log(9, 'Sending UI consolidate stats: %s'%self.stats)
-      self._send_ui({'cmd': 'stats', 'stats': self.stats})
+      self.log.log(9, 'Sending UI consolidate stats: %s'%send_stats)
+      self._send_ui({'cmd': 'stats', 'stats': send_stats})
     elif cmd.get('data') == 'individual_clients':
       for set in [self.clients, self.shutdown_clients]:
         for c in set:
           if not set[c]['stats']:
             continue
-          self.log.log(9, 'Sending UI stats for client %s: %s'%(set[c]['addr'], self.stats))
-          self._send_ui({'cmd': 'stats_individual_clients', 'stats': set[c]['stats'], 'client': set[c]['addr']})
+          self.log.log(9, 'Sending UI stats for client %s: %s'%(set[c]['addr'], set[c]['stats']))
+          self._send_ui({'cmd': 'stats_individual_clients', 'client': set[c]['addr'], 'stats': set[c]['stats']})
     
   def _get_client_stats(self):
     """

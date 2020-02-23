@@ -21,7 +21,13 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
 SOFTWARE."""
+__usage__="""%prog [options]"""
+__description__="""====================
+Requirements:
+  python 2.7+
 
+====================
+"""
 
 import inspect
 import os
@@ -35,6 +41,8 @@ import select
 import optparse
 import HydraUtils
 import stat
+import pathlib
+import json
 from HydraWorker import HydraWorker
 from HydraClient import HydraClient
 from HydraClient import HydraClientProcess
@@ -86,43 +94,134 @@ FILE_SIZE_HISTOGRAM = [ # File size histogram table to see how many files fall w
   #'other',             # > 1 TiB
 ]
 
-FILE_AGE_HISTOGRAM = [# File size histogram table to see how many files fall within each date range (in seconds)
-  0,                  # Sometime in the future
-  60,                 # Within last minute
-  3600,               # Within 1 hour
-  86400,              # Within 1 day
-  604800,             # Within 1 week
-  2592000,            # Within 30 days
-  5184000,            # Within 60 days
-  7776000,            # Within 90 days
-  15552000,           # Within 180 days
-  31536000,           # Within 1 year (365 days)
-  63072000,           # Within 2 years (365*2 days)
-  940608000,          # Within 3 years (365*3 days)
-  126144000,          # Within 4 years (365*4 days)
-  157680000,          # Within 5 years (365*5 days)
-  315360000,          # Within 10 years (365*10 days)
-  #'other',           # > 10 years
+FILE_AGE_HISTOGRAM = [  # File size histogram table to see how many files fall within each date range (in seconds)
+  0,                    # Sometime in the future
+  60,                   # Within last minute
+  3600,                 # Within 1 hour
+  86400,                # Within 1 day
+  604800,               # Within 1 week
+  2592000,              # Within 30 days
+  5184000,              # Within 60 days
+  7776000,              # Within 90 days
+  15552000,             # Within 180 days
+  31536000,             # Within 1 year (365 days)
+  63072000,             # Within 2 years (365*2 days)
+  940608000,            # Within 3 years (365*3 days)
+  126144000,            # Within 4 years (365*4 days)
+  157680000,            # Within 5 years (365*5 days)
+  315360000,            # Within 10 years (365*10 days)
+  #'other',             # > 10 years
 ]
 
 DEFAULT_CONFIG = {
+  'cache_size': 10000,                      # Number of file data sets to store in memory before flushing
+  'block_size': 8192,                       # Block size of file system
+  'default_stat_array_len': 16,             # Default size of statistics arrays
+  'extend_stat_array_incr': 16,             # Size of each extension of the stats array
   'top_n_count': 100,
-  'max_user_stats': 0,
   'file_size_historgram': FILE_SIZE_HISTOGRAM,
   'file_age_histogram': FILE_AGE_HISTOGRAM,
-  'cache_size': 10000,
-  'db_name': 'fs_audit',
+  #DEL: 'max_user_stats': 0,
+  #DEL: 'file_size_historgram': FILE_SIZE_HISTOGRAM,
+  #DEL: 'file_age_histogram': FILE_AGE_HISTOGRAM,
+  #DEL: 'db_name': 'fs_audit',
 }
+
+# EXAMPLE:
+# Additional simple counting stats. Adding stats here requires the code below to
+# increment the counters somewhere.
+EXTRA_BASIC_STATS = [
+  'file_size_total',                        # Total logical bytes used by all files
+  'file_size_block_total',                  # Total logical bytes used by all files on block boundaries
+  'dir_depth_total',                        # Sum of the depth of every directory. Used to calculate the average directory depth
+  'parent_dirs_total',                      # Total number of directories that have children
+]
+
+# Stats that track the maximum value
+EXTRA_STATS_MAX = [
+  'max_dir_depth',                          # Maximum directory depth from the root
+  'max_dir_width',                          # Highest number of subdirectories in a single directory
+  'max_files_in_dir',                       # The largest number of files in a single directory
+]
+
+# Stats that track the values at each directory level
+EXTRA_STATS_ARRAY = [
+  'dir_total_per_dir_depth',                # [Array] Count how many directories exist at a given depth from the root, e.g. 20 directories 1 level down, 40 directories 2 levels down. Used to calculate average directories at a given depth.
+  'files_total_per_dir_depth',              # [Array] Count how many files exist at a given depth from the root.
+  'file_size_total_per_dir_depth',          # [Array] Total of file logical bytes used at a given depth from the root. Used to calculate average file size at a given depth.
+  'file_size_block_total_per_dir_depth',    # [Array] Total of file logical bytes on block boundaries used at a given depth from the root. Used to calculate average file size at a given depth.
+]
+
+# Stats that track the max values at each directory level
+EXTRA_STATS_MAX_ARRAY = [
+  'max_files_in_dir_per_dir_depth',         # [Array] Holds the maximum file count for any directory at a given depth from the root.
+]
+
+
+def incr_per_depth(data_array, index, val):
+  try:
+    data_array[index] += val
+  except IndexError as e:
+    extension = (index - len(data_array) + 1)
+    if extension < self.args['extend_stat_array_incr']:
+      extension = self.args['extend_stat_array_incr']
+    data_array.extend([0]*extension)
+    data_array[index] += val
+
+def max_per_depth(data_array, index, val):
+  try:
+    cur_val = data_array[index]
+  except IndexError as e:
+    extension = (index - len(data_array) + 1)
+    if extension < self.args['extend_stat_array_incr']:
+      extension = self.args['extend_stat_array_incr']
+    data_array.extend([0]*extension)
+    cur_val = data_array[index]
+  if val > cur_val:
+    data_array[index] = val
+    
+def add_to_per_depth(mutable, newdata):
+  l1 = len(mutable)
+  l2 = len(newdata)
+  if l1 < l2:
+    extension = l2 - l1
+    if extension < self.args['extend_stat_array_incr']:
+      extension = self.args['extend_stat_array_incr']
+    mutable.extend([0]*extension)
+  for i in range(len(newdata)):
+    mutable[i] += newdata[i]
+
+def max_to_per_depth(mutable, newdata):
+  l1 = len(mutable)
+  l2 = len(newdata)
+  if l1 < l2:
+    extension = l2 - l1
+    if extension < self.args['extend_stat_array_incr']:
+      extension = self.args['extend_stat_array_incr']
+    mutable.extend([0]*extension)
+  for i in range(len(newdata)):
+    if newdata[i] > mutable[i]:
+      mutable[i] = newdata[i]
+
+def divide_per_depth(data1, data2, divbyzero=0):
+  l1 = len(data1)
+  l2 = len(data2)
+  if l1 < l2:
+    data1.extend([0]*(l2 - l1 + 1))
+  elif l2 < l1:
+    data2.extend([0]*(l1 - l2 + 1))
+  return [(x/y if y else divbyzero) for x, y in zip(data1, data2)]
+
 
 class WorkerHandler(HydraWorker):
   def __init__(self, args={}):
     super(WorkerHandler, self).__init__(args)
     self.args = dict(DEFAULT_CONFIG)
     self.args.update(args)
-    self.global_stats = {}
-    self.stats_init(self.global_stats)
     self.cache = [None]*self.args.get('cache_size')
     self.cache_idx = 0
+    self.ppath_len = 0
+    self.ppath_adj = 0
     self.db = None
     self.db_client = None
     
@@ -149,21 +248,32 @@ class WorkerHandler(HydraWorker):
         self.db = self.db_client[self.args['db']['mongodb_name']]
         self.log.debug("MongoDB connected")
     
-  def stats_init(self, stat_obj):
-    stat_obj['hist_file_size_config'] = self.args.get('hist_file_size_config')
-    stat_obj['hist_file_atime_config'] = self.args.get('hist_file_atime_config')
-    stat_obj['hist_file_mtime_config'] = self.args.get('hist_file_mtime_config')
-    stat_obj['hist_file_ctime_config'] = self.args.get('hist_file_ctime_config')
-    stat_obj['topn_file_size_by_uid_count'] = self.args.get('topn_file_size_by_uid_count')
-    stat_obj['topn_file_size_by_gid_count'] = self.args.get('topn_file_size_by_gid_count')
-    stat_obj['topn_file_size_count'] = self.args.get('topn_file_size')
+  def init_stats(self):
+    super(WorkerHandler, self).init_stats()
+    # EXAMPLE:
+    # Extra simple counting stats need to be initialized properly
+    for s in (EXTRA_BASIC_STATS + EXTRA_STATS_MAX):
+      self.stats[s] = 0
+    for s in EXTRA_STATS_ARRAY:
+      self.stats[s] = [0]*self.args['default_stat_array_len']
+    for s in EXTRA_STATS_MAX_ARRAY:
+      self.stats[s] = [0]*self.args['default_stat_array_len']
+      
+  #DEL: def stats_init(self, stat_obj):
+    #stat_obj['hist_file_size_config'] = self.args.get('hist_file_size_config')
+    #stat_obj['hist_file_atime_config'] = self.args.get('hist_file_atime_config')
+    #stat_obj['hist_file_mtime_config'] = self.args.get('hist_file_mtime_config')
+    #stat_obj['hist_file_ctime_config'] = self.args.get('hist_file_ctime_config')
+    #stat_obj['topn_file_size_by_uid_count'] = self.args.get('topn_file_size_by_uid_count')
+    #stat_obj['topn_file_size_by_gid_count'] = self.args.get('topn_file_size_by_gid_count')
+    #stat_obj['topn_file_size_count'] = self.args.get('topn_file_size')
     #stat_obj['hist_file_count_by_size'] = HistogramStatCountAndValue(self.hist_file_size_config)
     #stat_obj['hist_file_count_by_atime'] = HistogramStat2D(self.hist_file_atime_config, self.hist_file_size_config)
     #stat_obj['hist_file_count_by_mtime'] = HistogramStat2D(self.hist_file_mtime_config, self.hist_file_size_config)
     #stat_obj['hist_file_count_by_ctime'] = HistogramStat2D(self.hist_file_ctime_config, self.hist_file_size_config)
     #stat_obj['topn_file_size'] = []
-    stat_obj['extensions'] = HashBinCountAndValue()
-    stat_obj['category'] = HashBinCountAndValue()
+    #stat_obj['extensions'] = HashBinCountAndValue()
+    #stat_obj['category'] = HashBinCountAndValue()
     # TODO:
     # Need track total size and file count by file category (video, images, audio, office, etc.)
     
@@ -181,11 +291,25 @@ class WorkerHandler(HydraWorker):
       self.cache_idx = 0
       
   def filter_subdirectories(self, root, dirs, files):
-    # Number of files in current directory = len(files)
-    # Can use this to find average number of files/directory or avg width of directories
-    #self.audit.info(root)
+    # No filtering is happening below. We are updating stats that are best
+    # collected when starting at a new directory.
+    num_dirs = len(dirs)
+    num_files = len(files)
+    if num_dirs:
+      self.stats['parent_dirs_total'] += 1
+    ppath = pathlib.PurePath(root)
+    self.ppath_len = len(ppath.parents) - self.args['path_depth_adj']
+    self.stats['dir_depth_total'] += self.ppath_len
+    if num_dirs > self.stats['max_dir_width']:
+      self.stats['max_dir_width'] = num_dirs
+    if self.ppath_len > self.stats['max_dir_depth']:
+      self.stats['max_dir_depth'] = self.ppath_len
+    if num_files > self.stats['max_files_in_dir']:
+      self.stats['max_files_in_dir'] = num_files
+    incr_per_depth(self.stats['dir_total_per_dir_depth'], self.ppath_len, 1)
+    max_per_depth(self.stats['max_files_in_dir_per_dir_depth'], self.ppath_len, num_files)
     return dirs, files
-  
+
   def handle_file(self, dir, file):
     """
     Fill in docstring
@@ -208,10 +332,11 @@ class WorkerHandler(HydraWorker):
       except:
         self.log.log(9, 'Unable to get file permissions for: %s'%full_path_file)
 
+      fsize = file_lstats.st_size
       file_data = {
         'filename': full_path_file,
         'ext': os.path.splitext(full_path_file)[1].replace('.', ''),
-        'filesize': file_lstats.st_size,
+        'filesize': fsize,
         'sid': owner_sid,
         'atime': file_lstats.st_atime,
         'ctime': file_lstats.st_ctime,
@@ -222,7 +347,16 @@ class WorkerHandler(HydraWorker):
       self.cache_idx += 1
       if self.cache_idx >= self.args.get('cache_size'):
         self.flush_cache()
-    #  self.hist_file_count_by_size.insert_data(file_lstats.st_size)
+      
+      # Update stats
+      self.stats['file_size_total'] += fsize
+      bs = self.args['block_size']
+      block_fsize = (fsize//bs + (not not fsize%bs))*bs   # A not not saves on if/else check. An number + True is the same as number + 1
+      self.stats['file_size_block_total'] += block_fsize
+      incr_per_depth(self.stats['files_total_per_dir_depth'], self.ppath_len, 1)
+      incr_per_depth(self.stats['file_size_total_per_dir_depth'], self.ppath_len, fsize)
+      incr_per_depth(self.stats['file_size_block_total_per_dir_depth'], self.ppath_len, block_fsize)
+    # DEL:  self.hist_file_count_by_size.insert_data(file_lstats.st_size)
     #  self.hist_file_count_by_atime.insert_data(file_lstats.st_atime, file_lstats.st_size)
     #  self.hist_file_count_by_mtime.insert_data(file_lstats.st_mtime, file_lstats.st_size)
     #  self.hist_file_count_by_ctime.insert_data(file_lstats.st_ctime, file_lstats.st_size)
@@ -237,6 +371,10 @@ class WorkerHandler(HydraWorker):
     
   def handle_stats_collection(self):
     self.flush_cache()
+    
+  def handle_update_settings(self, cmd):
+    self.args.update(cmd['settings'])
+    return True
     
 class ClientProcessor(HydraClient):
   def __init__(self, worker_class, args={}):
@@ -253,29 +391,138 @@ class ClientProcessor(HydraClient):
         self.log.critical('Unknown DB type of %s specified.'%db_type)
         sys.exit(1)
     
-  #def consolidate_stats(self):
-  #  print("Client consolidating stats")
-  #  super(ClientProcessor, self).consolidate_stats()
+  def init_stats(self, stat_state):
+    super(ClientProcessor, self).init_stats(stat_state)
+    for s in (EXTRA_BASIC_STATS + EXTRA_STATS_MAX):
+      stat_state[s] = 0
+    for s in EXTRA_STATS_ARRAY:
+      self.stats[s] = [0]*self.args['default_stat_array_len']
+    for s in EXTRA_STATS_MAX_ARRAY:
+      self.stats[s] = [0]*self.args['default_stat_array_len']
+
+  def consolidate_stats(self):
+    super(ClientProcessor, self).consolidate_stats()
+    for set in [self.workers, self.shutdown_pending, self.shutdown_workers]:
+      for w in set:
+        if not set[w]['stats']:
+          continue
+        for s in EXTRA_BASIC_STATS:
+          self.stats[s] += set[w]['stats'][s]
+        for s in EXTRA_STATS_MAX:
+          if set[w]['stats'][s] > self.stats[s]:
+            self.stats[s] = set[w]['stats'][s]
+        for s in EXTRA_STATS_ARRAY:
+          add_to_per_depth(self.stats[s], set[w]['stats'][s])
+        for s in EXTRA_STATS_MAX_ARRAY:
+          max_to_per_depth(self.stats[s], set[w]['stats'][s])
     
-  def handle_extended_server_cmd(self, raw_data):
-    print("Got extended server cmd in client processor")
+  #def handle_extended_server_cmd(self, raw_data):
+  #  return True
+
+  def handle_update_settings(self, cmd):
+    self.args.update(cmd['settings'])
+    self.send_all_workers({
+        'op': 'update_settings',
+        'settings': cmd['settings'],
+    })
     return True
     
 '''
 Generic server processor
 '''
 class ServerProcessor(HydraServer):
+  def init_stats(self, stat_state):
+    super(ServerProcessor, self).init_stats(stat_state)
+    for s in (EXTRA_BASIC_STATS + EXTRA_STATS_MAX):
+      stat_state[s] = 0
+    for s in EXTRA_STATS_ARRAY:
+      stat_state[s] = [0]*self.args['default_stat_array_len']
+    for s in EXTRA_STATS_MAX_ARRAY:
+      stat_state[s] = [0]*self.args['default_stat_array_len']
+  
   def consolidate_stats(self):
-    super(ServerProcessor, self).consolidate_stats()
+    '''
+    The returend stats object can be access using the key values on the left
+    side of the equal sign below. A description or formula for each of the keys
+    is on the right side of the equal sign.
 
+    Already computed
+    ==========
+    processed_files = Total file processed
+    processed_dirs = Total dirs processed
+    file_size_total = Total bytes processed
+    file_size_block_total = Total bytes in blocks processed
+    max_files_in_dir = Maximum number of files in any single directory
+    max_dir_depth = Deepest directory level
+    max_dir_width = Maximum number of subdirectories in any single directory
+    
+    Array style based on directory depth
+    ----------
+    max_files_in_dir_per_dir_depth = For each directory depth level, the maximum number of files found in a directory
+    dir_total_per_dir_depth = Count how many directories exist at a given depth from the root, e.g. 20 directories 1 level down, 40 directories 2 levels down. Used to calculate average directories at a given depth.
+    files_total_per_dir_depth = Count how many files exist at a given depth from the root.
+    file_size_total_per_dir_depth = Total of file logical bytes used at a given depth from the root. Used to calculate average file size at a given depth.
+    file_size_block_total_per_dir_depth = Total of file logical bytes on block boundaries used at a given depth from the root. Used to calculate average file size at a given depth.
+    
+    Computed
+    ==========
+    average_file_size = file_size_total / processed_files
+    average_file_size_block = file_size_block_total / processed_files
+    average_directory_depth = dir_depth_total / processed_dirs
+    average_directory_width = (processed_dirs -1) / parent_dirs_total OR 0
+
+    Array style based on directory depth
+    ----------
+    average_file_size_per_dir_depth = file_size_total_per_dir_depth[i] / files_total_per_dir_depth[i]
+    average_file_size_block_per_dir_depth = file_size_block_total_per_dir_depth[i] / files_total_per_dir_depth[i]
+    average_files_per_dir_depth = files_total_per_dir_depth[i] / dir_total_per_dir_depth[i]
+    '''
+    if self.last_client_stat_update <= self.last_consolidate_stats:
+      return self.stats
+    super(ServerProcessor, self).consolidate_stats()
+    for set in [self.clients, self.shutdown_clients]:
+      for c in set:
+        if not set[c]['stats']:
+          continue
+        for s in EXTRA_BASIC_STATS:
+          self.stats[s] += set[c]['stats'][s]
+        for s in EXTRA_STATS_MAX:
+          if set[c]['stats'][s] > self.stats[s]:
+            self.stats[s] = set[c]['stats'][s]
+        for s in EXTRA_STATS_ARRAY:
+          add_to_per_depth(self.stats[s], set[c]['stats'][s])
+        for s in EXTRA_STATS_MAX_ARRAY:
+          max_to_per_depth(self.stats[s], set[c]['stats'][s])
+    # Calculate all the stats
+    self.stats.update({
+      'average_file_size': self.stats['file_size_total']/self.stats['processed_files'] if self.stats['processed_files'] else 0,
+      'average_file_size_block': self.stats['file_size_block_total']/self.stats['processed_files'] if self.stats['processed_files'] else 0,
+      'average_directory_depth': self.stats['dir_depth_total']/self.stats['processed_dirs'] if self.stats['processed_dirs'] else 0,
+      'average_directory_width': (self.stats['processed_dirs'] - 1)/(self.stats['parent_dirs_total']) if self.stats['parent_dirs_total'] else 0,
+      'average_file_size_per_dir_depth': divide_per_depth(self.stats['file_size_total_per_dir_depth'], self.stats['files_total_per_dir_depth']),
+      'average_file_size_block_per_dir_depth': divide_per_depth(self.stats['file_size_block_total_per_dir_depth'], self.stats['files_total_per_dir_depth']),
+      'average_files_per_dir_depth': divide_per_depth(self.stats['files_total_per_dir_depth'], self.stats['dir_total_per_dir_depth']),
+    })
+    return self.stats
+          
+  def handle_client_connected(self, client):
+    settings = {
+      'path_depth_adj': self.args['path_depth_adj']
+    }
+    self.send_client_command(
+        client,
+        {
+          'cmd': 'update_settings',
+          'settings': settings,
+        }
+    )
+    
   def handle_extended_client_cmd(self, cmd):
-    print("Got extended client cmd in client processor: %s"%cmd)
     return True
     
   def handle_extended_server_cmd(self, cmd):
-    print("Got extended server cmd in server processor")
     return True
-   
+    
 '''
 Add command line options
 '''
@@ -298,15 +545,10 @@ def AddParserOptions(parser, raw_cli):
                            "Options to add paths for processing.")
     op_group.add_option("--path", "-p",
                       default=None,
-                      action="append",
-                      help="Path to scan. Multiple --path options will queue up paths for processing. "
-                           "Use of full paths is recommended as clients will interpret this path according to their "
-                           "own current working directory."
-                           "This option is additive with the --path_file option with exact duplicate paths removed.")
-    op_group.add_option("--path_file", "-f",
-                      default=None,
-                      help="File name with a CR/LF separated list of paths to process. Any leading or trailing "
-                           "whitespace is preserved.")
+                      action="store",
+                      help="Path to scan. Use of full paths is recommended as "
+                           "clients will interpret this path according to their"
+                           " own current working directory.")
     parser.add_option_group(op_group)
 
     op_group = optparse.OptionGroup(parser, "DB options")
@@ -346,6 +588,10 @@ def AddParserOptions(parser, raw_cli):
                       type="float",
                       default=HydraUtils.SELECT_POLL_INTERVAL,
                       help="Polling time in seconds (float) between select calls [Default: %default]")
+    op_group.add_option("--default_stat_array_len",
+                      type="int",
+                      default=DEFAULT_CONFIG['default_stat_array_len'],
+                      help=optparse.SUPPRESS_HELP)
     parser.add_option_group(op_group)
 
     op_group = optparse.OptionGroup(parser, "Logging, auditing and debug",
@@ -377,7 +623,12 @@ def main():
   cli_options = sys.argv[1:]
     
   # Create our command line parser. We use the older optparse library for compatibility on OneFS
-  parser = optparse.OptionParser(version=__version__)
+  parser = optparse.OptionParser(
+      usage=__usage__,
+      description=__description__,
+      version=__version__,
+      formatter=HydraUtils.IndentedHelpFormatterWithNL(),
+  )
   # Create main CLI parser
   AddParserOptions(parser, cli_options)
   (options, args) = parser.parse_args(cli_options)
@@ -390,10 +641,13 @@ def main():
   logger_config = dict(HydraUtils.LOGGING_CONFIG)
   if options.debug > 3:
     log_level = 5
+    logger_config['handlers']['default']['formatter'] = 'debug'
   elif options.debug > 2:
     log_level = 9
+    logger_config['handlers']['default']['formatter'] = 'debug'
   elif options.debug > 1:
     log_level = logging.DEBUG
+    logger_config['handlers']['default']['formatter'] = 'debug'
   elif options.debug > 0:
     log_level = logging.INFO
   else:
@@ -413,11 +667,21 @@ def main():
     log.handlers[0].doRollover()
   if options.audit:
     audit.handlers[0].doRollover()
-  
+    
+  # Calculate an offset for the path depth. We want a depth of 0 to represent
+  # the starting point of the directory scan. This naturally only occurs when
+  # using '.'. Otherwise the full path is counted as the path depth.
+  # Examples:
+  # test/ has a depth of 1
+  # test/../test has a depth of 3 even though it is the same directory as above
+  # . has a depth of 0
+  # /home has a depth of 1
+  # What we do is take the starting path, calculates its depth and send this
+  # to all components so that they can adjust for the start depth.
   if options.server:
     log.info("Starting up the server")
     # Get paths to process from parsed CLI options
-    proc_paths = HydraUtils.get_processing_paths(options.path, options.path_file)
+    proc_paths = HydraUtils.get_processing_paths(options.path)
     if len(proc_paths) < 1:
       log.critical('A path via command line or a path file must be specified.')
       sys.exit(1)
@@ -425,6 +689,9 @@ def main():
     start_time = 0
     end_time = 0
     startup = True
+    p = pathlib.PurePath(proc_paths[0])
+    path_depth_adj = len(p.parents)
+      
     svr = HydraServerProcess(
         addr=options.listen,
         port=options.port,
@@ -435,6 +702,8 @@ def main():
           'select_poll_interval': options.select_poll_interval,
           # EXAMPLE:
           # Application specific variables
+          'path_depth_adj': path_depth_adj,
+          'default_stat_array_len': options.default_stat_array_len,
           'db': {
             'db_type': options.db_type,
             'mongodb_name': options.mongodb_name,
@@ -455,13 +724,14 @@ def main():
       try:
         readable, _, _ = select.select([svr], [], [])
         if len(readable) > 0:
-          cmd = svr.recv()
-          log.info("UI received: %s"%cmd)
-          if cmd.get('cmd') == 'state':
-            state = cmd.get('state')
-            pstate = cmd.get('prev_state')
+          msg = svr.recv()
+          
+          cmd = msg.get('cmd')
+          if cmd == 'state':
+            state = msg.get('state')
+            pstate = msg.get('prev_state')
+            log.info("Server state transition: %s -> %s"%(pstate, state))
             if state == 'processing':
-              log.info("Server state transition: %s -> %s"%(pstate, state))
               if pstate == 'idle':
                 start_time = time.time()
                 log.info("Time start: %s"%start_time)
@@ -483,6 +753,18 @@ def main():
                 svr.send({'cmd': 'shutdown'})
             elif state == 'shutdown':
               break
+          elif cmd == 'stats':
+            audit.info('UI received stats update (%s):\n%s'%(
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
+                json.dumps(
+                    msg.get('stats'),
+                    ensure_ascii=False,
+                    indent=4,
+                    sort_keys=True,
+                )
+            ))
+          else:
+            log.info("UI received: %s"%cmd)
       except KeyboardInterrupt as ke:
         log.info("Terminate signal received, shutting down")
         break
@@ -505,6 +787,7 @@ def main():
         'select_poll_interval': options.select_poll_interval,
         # EXAMPLE:
         # Application specific variables
+        'default_stat_array_len': options.default_stat_array_len,
         'db': {
           'db_type': options.db_type,
           'mongodb_name': options.mongodb_name,

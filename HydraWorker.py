@@ -488,7 +488,8 @@ class HydraWorker(multiprocessing.Process):
       self.log.error("Malformed message for operation 'proc_dir': %r"%data)
       return False
     for dir in dirs:
-      if dir in [None, '.', '..']:
+      #if dir in [None, '.', '..']:
+      if dir in [None]:
         self.log.warn('Invalid directory process request: %s'%dir)
         continue
       self.work_queue.append({'type': 'dir', 'path': dir})
@@ -541,7 +542,13 @@ class HydraWorker(multiprocessing.Process):
         work_type = work_item.get('type', None)
         if work_type in ['dir', 'partial_dir']:
           self.stats['queued_dirs'] -= 1
-        elif work_type == 'file':
+        elif work_type in ['partial_dir']:
+          # If we hit a partial directory entry, we do not return it to the
+          # client because partial work directories are currently not supported
+          # to be passed between workers
+          self.work_queue.append(work_item)
+          break
+        elif work_type in ['file']:
           self.stats['queued_files'] -= 1
         return_items.append(work_item)
       self._send_client('work_items', return_items)
@@ -595,40 +602,48 @@ class HydraWorker(multiprocessing.Process):
         self.stats['filtered_dirs'] += 1
       else:
         temp_work = []
-        for root, dirs, files in fswalk(work_dir):
-          # Filter subdirectories and files by calling the method in the derived class
-          before_filter_dirs = len(dirs)
-          before_filter_files = len(files)
-          dirs[:], files[:] = self.filter_subdirectories(work_dir, dirs, files)
-          after_filter_dirs = len(dirs)
-          after_filter_files = len(files)
-          if before_filter_dirs != after_filter_dirs:
-            self.stats['filtered_dirs'] += after_filter_dirs - before_filter_dirs
-          if before_filter_files != after_filter_files:
-            self.stats['filtered_files'] += after_filter_files - before_filter_files
-            
-          # We queue up any new directories to the left in our work queue.
-          # This leaves the directories closer to the initial ones on the right
-          # side of the work queue.
-          for dir in reversed(dirs):
-            self.work_queue.appendleft({'type': 'dir', 'path': os.path.join(root, dir)})
-          self.stats['queued_dirs'] += len(dirs)
-          for file in files:
-            # Keep track of how long we have been processing this
-            # directory.  If the time exceeds LONG_PROCESSING_THRESHOLD
-            # we will queue up the files and push them onto the 
-            # processing queue and let the main processing loop have a
-            # chance to pick up new commands
-            proc_time = time.time()
-            if (proc_time - start_time) > HydraUtils.LONG_PROCESSING_THRESHOLD:
-              temp_work.append(file)
-              continue
-            if(self.handle_file(work_dir, file)):
-              self.stats['processed_files'] += 1
-            else:
-              self.stats['skipped_files'] += 1
-          # We actually want to abort the tree walk as we want to handle the directory structure 1 directory at a time
-          dirs[:] = []
+        try:
+          for root, dirs, files in fswalk(work_dir):
+            # Filter subdirectories and files by calling the method in the derived class
+            before_filter_dirs = len(dirs)
+            before_filter_files = len(files)
+            dirs[:], files[:] = self.filter_subdirectories(root, dirs, files)
+            after_filter_dirs = len(dirs)
+            after_filter_files = len(files)
+            if before_filter_dirs != after_filter_dirs:
+              self.stats['filtered_dirs'] += after_filter_dirs - before_filter_dirs
+            if before_filter_files != after_filter_files:
+              self.stats['filtered_files'] += after_filter_files - before_filter_files
+              
+            # We queue up any new directories to the left in our work queue.
+            # This leaves the directories closer to the initial ones on the right
+            # side of the work queue.
+            for dir in reversed(dirs):
+              self.work_queue.appendleft({'type': 'dir', 'path': os.path.join(root, dir)})
+            self.stats['queued_dirs'] += len(dirs)
+            for file in files:
+              # Keep track of how long we have been processing this
+              # directory.  If the time exceeds LONG_PROCESSING_THRESHOLD
+              # we will queue up the files and push them onto the 
+              # processing queue and let the main processing loop have a
+              # chance to pick up new commands
+              proc_time = time.time()
+              if (proc_time - start_time) > HydraUtils.LONG_PROCESSING_THRESHOLD:
+                temp_work.append(file)
+                continue
+              try:
+                if(self.handle_file(work_dir, file)):
+                  self.stats['processed_files'] += 1
+                else:
+                  self.stats['skipped_files'] += 1
+              except Exception as e:
+                self.stats['skipped_files'] += 1
+                self.log.critical(e)
+            # We actually want to abort the tree walk as we want to handle the directory structure 1 directory at a time
+            dirs[:] = []
+        except Exception as e:
+          self.log.critical(e)
+          raise
       if temp_work:
         self.work_queue.appendleft({'type': 'partial_dir', 'path': work_dir, 'files': temp_work})
       else:

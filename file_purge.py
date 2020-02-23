@@ -228,22 +228,21 @@ class ServerProcessor(HydraServer):
           continue
         for s in EXTRA_BASIC_STATS:
           self.stats[s] += set[c]['stats'][s]
+    return self.stats
           
   def handle_client_connected(self, client):
+    setting_keys = list(DEFAULT_CONFIG.keys())
+    settings = {}
+    for key in setting_keys:
+      settings[key] = self.args.get(key)
     self.send_client_command(
         client,
         {
           'cmd': 'update_settings',
-          'settings': {
-            'current_time': self.args['current_time'],
-            'time_delta_sec': self.args['time_delta_sec'],
-            'compare_atime': self.args['compare_atime'],
-            'compare_ctime': self.args['compare_ctime'],
-            'compare_mtime': self.args['compare_mtime'],
-            'purge': self.args['purge'],
-          },
+          'settings': settings,
         }
     )
+    return True
 
   def handle_extended_server_cmd(self, cmd):
     if cmd.get('cmd') == 'output_final_stats':
