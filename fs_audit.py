@@ -319,7 +319,13 @@ class WorkerHandler(HydraWorker):
     except WindowsError as e:
       if e.winerror == 3 and len(full_path_file) > 255:
         self.log.error('Unable to stat file due to path length > 255 characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1')
-        return False
+        self.log.error(e)
+      else:
+        if HydraUtils.is_invalid_windows_filename(file):
+          self.log.error('File contains invalid characters or invalid names for Windows: %s'%full_file_path)
+        else:
+          self.log.error(e)
+      return False
     # We only want to look at regular files. We will ignore symlinks
     if stat.S_ISREG(file_lstats.st_mode):
       self.audit.info(os.path.join(dir, file))
