@@ -666,6 +666,8 @@ class HydraWorker(multiprocessing.Process):
           continue
         if(self.handle_file(work_dir, file)):
           self.stats['processed_files'] += 1
+        else:
+          self.stats['skipped_files'] += 1
       # If temp_work is empty, we finished the remainder of the directory
       # so we will do the post directory processing
       # If not then we will re-queue the work and continue processing after
