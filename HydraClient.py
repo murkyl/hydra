@@ -493,6 +493,7 @@ class HydraClient(object):
     """
     Fill in docstring
     """
+    workers_sent_work = {}
     idle, processing = self._get_idle_working_worker_keys()
     queue_len = len(self.work_queue)
     if (queue_len == 0) or (len(idle) == 0):
@@ -525,6 +526,11 @@ class HydraClient(object):
         if work_items:
           self.log.debug("Sending idle worker: %s directories: %s"%(k, work_items))
           self.send_worker(k, {'op': 'proc_dir', 'dirs': work_items})
+          workers_sent_work[k] = True
+    # Semi-hack to track the fact we have sent work to an idle worker
+    for k in workers_sent_work.keys():
+      self.log.debug("Setting worker (%s) to idle_queued_work"%k)
+      self.workers[k]['state'] = 'idle_queued_work'
   
   def _process_returned_work(self, msg):
     """

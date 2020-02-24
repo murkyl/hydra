@@ -8,6 +8,7 @@ __all__ = [
   "config_logger",
   "create_uuid_secret",
   "get_processing_paths",
+  "is_invalid_windows_filename",
   "parse_path_file",
   "set_logger_handler_to_socket",
   "set_logger_logger_level",
@@ -48,6 +49,7 @@ import select
 import threading
 import optparse
 import textwrap
+import re
 try:
   import socketserver
 except:
@@ -120,6 +122,18 @@ HYDRA_WORKER_WORK_TYPES = {
   2: 'partial_dir',
   3: 'file',
 }
+
+INVALID_WINDOWS_FILENAME_CHARS = '\x00-\x1f,\|\\/:\*\?"<>'
+INVALID_WINDOWS_FILENAME_ROOTS = [
+  'CON',
+  'PRN',
+  'AUX',
+  'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9',
+]
+INVALID_WINDOWS_FILENAME_REGEX = None
+INVALID_WINDOWS_FILECHAR_REGEX = None
 
 LOGGING_CONFIG = {
   'version': 1,
@@ -245,6 +259,20 @@ LOGGING_WORKER_CONFIG = {
   },
 }
 
+
+def is_invalid_windows_filename(file):
+  global INVALID_WINDOWS_FILENAME_REGEX
+  global INVALID_WINDOWS_FILECHAR_REGEX
+  if INVALID_WINDOWS_FILENAME_REGEX is None:
+    roots = '|'.join(INVALID_WINDOWS_FILENAME_ROOTS)
+    INVALID_WINDOWS_FILENAME_REGEX = re.compile("^(%s)($|\..*$)"%roots, re.I)
+  if INVALID_WINDOWS_FILECHAR_REGEX is None:
+    INVALID_WINDOWS_FILECHAR_REGEX = re.compile(".*[%s].*"%INVALID_WINDOWS_FILENAME_CHARS)
+  if INVALID_WINDOWS_FILENAME_REGEX.match(file):
+    return True
+  if INVALID_WINDOWS_FILECHAR_REGEX.match(file):
+    return True
+  return False
 
 # Used mainly as a helper for configuring tests
 def config_logger(log_cfg, name, log_level=logging.WARN, file=None):

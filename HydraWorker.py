@@ -69,6 +69,7 @@ import socket
 import select
 import struct
 import multiprocessing
+import traceback
 import logging
 import logging.config
 try:
@@ -635,10 +636,12 @@ class HydraWorker(multiprocessing.Process):
                 if(self.handle_file(work_dir, file)):
                   self.stats['processed_files'] += 1
                 else:
+                  self.log.debug('Skipped file: %s'%os.path.join(work_dir, file))
                   self.stats['skipped_files'] += 1
               except Exception as e:
+                self.log.debug('Skipped file: %s'%os.path.join(work_dir, file))
                 self.stats['skipped_files'] += 1
-                self.log.critical(e)
+                self.log.critical(traceback.format_exc())
             # We actually want to abort the tree walk as we want to handle the directory structure 1 directory at a time
             dirs[:] = []
         except Exception as e:
@@ -667,6 +670,7 @@ class HydraWorker(multiprocessing.Process):
         if(self.handle_file(work_dir, file)):
           self.stats['processed_files'] += 1
         else:
+          self.log.debug('Skipped file: %s'%os.path.join(work_dir, file))
           self.stats['skipped_files'] += 1
       # If temp_work is empty, we finished the remainder of the directory
       # so we will do the post directory processing
