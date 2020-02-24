@@ -121,10 +121,8 @@ DEFAULT_CONFIG = {
   'top_n_count': 100,
   'file_size_historgram': FILE_SIZE_HISTOGRAM,
   'file_age_histogram': FILE_AGE_HISTOGRAM,
-  #DEL: 'max_user_stats': 0,
   #DEL: 'file_size_historgram': FILE_SIZE_HISTOGRAM,
   #DEL: 'file_age_histogram': FILE_AGE_HISTOGRAM,
-  #DEL: 'db_name': 'fs_audit',
 }
 
 # EXAMPLE:
@@ -135,6 +133,7 @@ EXTRA_BASIC_STATS = [
   'file_size_block_total',                  # Total logical bytes used by all files on block boundaries
   'dir_depth_total',                        # Sum of the depth of every directory. Used to calculate the average directory depth
   'parent_dirs_total',                      # Total number of directories that have children
+  'symlink_files',                          # Number of files that are symbolic links
 ]
 
 # Stats that track the maximum value
@@ -367,6 +366,12 @@ class WorkerHandler(HydraWorker):
     # topn_file_size_by_uid
     # topn_file_size_by_gid
     # topn_file_size
+    elif stat.S_ISLNK(file_lstats.st_mode):
+      # We didn't really process a symlink so account for it here as a symlink
+      self.stats['symlink_files'] += 1
+      return False
+    else:
+      return False
     return True
     
   def handle_stats_collection(self):
