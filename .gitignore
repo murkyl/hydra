@@ -52,6 +52,9 @@ test/torture/Big5*
 test/torture/EUC-KR*
 test/torture/GreaterThan*
 test/torture/ShiftJIS*
+*.log
+*.log.*
+
 # Translations
 *.mo
 *.pot
