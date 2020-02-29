@@ -100,10 +100,15 @@ except ImportError:
     # OneFS < 8.0 is based on FreeBSD 7.1, the FreeBSD 7.1 scandir
     # binary is slightly older than the other binaries (scandir v1.5
     # vs. v1.9) due to the EOSL of FreeBSD 7.1
-    # OneFS >= 8.0 is based on FreeBSD 10
-    # Future version of OneFS will be based on FreeBSD 11
-    if 'OneFS-v8' in local_os:
+    # OneFS 8.0 is based on FreeBSD 10
+    # OneFS 8.1 is based on FreeBSD 11
+    # OneFS 8.2 is based on FreeBSD 12
+    if 'OneFS-v9.0' in local_os:
       scandir_path = None
+    elif 'OneFS-v8.2' in local_os:
+      scandir_path = None
+    elif 'OneFS-v8.1' in local_os:
+      scandir_path = 'scandir_freebsd11'
     else:
       scandir_path = 'scandir_generic'
   elif 'FreeBSD' in local_os:

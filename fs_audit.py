@@ -41,7 +41,6 @@ import select
 import optparse
 import HydraUtils
 import stat
-import pathlib
 import json
 from HydraWorker import HydraWorker
 from HydraClient import HydraClient
@@ -52,6 +51,20 @@ from HistogramStat import HistogramStat
 from HistogramStat import HistogramStatCountAndValue
 from HistogramStat import HistogramStat2D
 from HistogramStat import HashBinCountAndValue
+try:
+  import pathlib
+except:
+  # On Python without pathlib, build minimal support for path depth
+  # This does not handle complicated path cases.
+  class pathlib:
+    def __init__(self, path):
+      self.parents = path
+    @staticmethod
+    def PurePath(path):
+      p = [x for x in path.split(os.path.sep) if x != '']
+      if len(p) > 0 and p[0] == '.':
+        del p[0]
+      return pathlib(p)
 try:
   import pymongo
 except:
@@ -210,6 +223,10 @@ def divide_per_depth(data1, data2, divbyzero=0):
   elif l2 < l1:
     data2.extend([0]*(l1 - l2 + 1))
   return [(x/y if y else divbyzero) for x, y in zip(data1, data2)]
+  
+def path_depth(path):
+  ppath = pathlib.PurePath(path)
+  return len(ppath.parents)
 
 
 class WorkerHandler(HydraWorker):
@@ -296,8 +313,7 @@ class WorkerHandler(HydraWorker):
     num_files = len(files)
     if num_dirs:
       self.stats['parent_dirs_total'] += 1
-    ppath = pathlib.PurePath(root)
-    self.ppath_len = len(ppath.parents) - self.args['path_depth_adj']
+    self.ppath_len = path_depth(root) - self.args['path_depth_adj']
     self.stats['dir_depth_total'] += self.ppath_len
     if num_dirs > self.stats['max_dir_width']:
       self.stats['max_dir_width'] = num_dirs
@@ -317,12 +333,12 @@ class WorkerHandler(HydraWorker):
     try:
       file_lstats = os.lstat(full_path_file)
     except WindowsError as e:
-      if e.winerror == 3 and len(full_path_file) > 255:
-        self.log.error('Unable to stat file due to path length > 255 characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1')
+      if e.winerror == 3 and len(full_path_file) > HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH:
+        self.log.error('Unable to stat file due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH)
         self.log.error(e)
       else:
         if HydraUtils.is_invalid_windows_filename(file):
-          self.log.error('File contains invalid characters or invalid names for Windows: %s'%full_file_path)
+          self.log.error('File contains invalid characters or invalid names for Windows: %s'%full_path_file)
         else:
           self.log.error(e)
       return False
@@ -453,7 +469,7 @@ class ServerProcessor(HydraServer):
   
   def consolidate_stats(self):
     '''
-    The returend stats object can be access using the key values on the left
+    The returned stats object can be access using the key values on the left
     side of the equal sign below. A description or formula for each of the keys
     is on the right side of the equal sign.
 
@@ -551,6 +567,10 @@ def AddParserOptions(parser, raw_cli):
     parser.add_option("--listen",
                       default=None,
                       help="IP address to bind to when run as a server. The default will listen to all interfaces.")
+    parser.add_option("--verbose",
+                      action="store_true",
+                      default=False,
+                      help="Provide verbose output.")
 
     op_group = optparse.OptionGroup(parser, "Processing paths",
                            "Options to add paths for processing.")
@@ -659,7 +679,7 @@ def main():
   elif options.debug > 1:
     log_level = logging.DEBUG
     logger_config['handlers']['default']['formatter'] = 'debug'
-  elif options.debug > 0:
+  elif options.debug > 0 or options.verbose:
     log_level = logging.INFO
   else:
     log_level = logging.INFO
@@ -679,16 +699,6 @@ def main():
   if options.audit:
     audit.handlers[0].doRollover()
     
-  # Calculate an offset for the path depth. We want a depth of 0 to represent
-  # the starting point of the directory scan. This naturally only occurs when
-  # using '.'. Otherwise the full path is counted as the path depth.
-  # Examples:
-  # test/ has a depth of 1
-  # test/../test has a depth of 3 even though it is the same directory as above
-  # . has a depth of 0
-  # /home has a depth of 1
-  # What we do is take the starting path, calculates its depth and send this
-  # to all components so that they can adjust for the start depth.
   if options.server:
     log.info("Starting up the server")
     # Get paths to process from parsed CLI options
@@ -700,8 +710,17 @@ def main():
     start_time = 0
     end_time = 0
     startup = True
-    p = pathlib.PurePath(proc_paths[0])
-    path_depth_adj = len(p.parents)
+    # Calculate an offset for the path depth. We want a depth of 0 to represent
+    # the starting point of the directory scan. This naturally only occurs when
+    # using '.'. Otherwise the full path is counted as the path depth.
+    # Examples:
+    # test/ has a depth of 1
+    # test/../test has a depth of 3 even though it is the same directory as above
+    # . has a depth of 0
+    # /home has a depth of 1
+    # What we do is take the starting path, calculates its depth and send this
+    # to all components so that they can adjust for the start depth.
+    path_depth_adj = path_depth(proc_paths[0])
       
     svr = HydraServerProcess(
         addr=options.listen,

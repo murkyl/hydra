@@ -123,6 +123,7 @@ HYDRA_WORKER_WORK_TYPES = {
   3: 'file',
 }
 
+MAX_WINDOWS_FILEPATH_LENGTH = 259                           # Excludes the NUL
 INVALID_WINDOWS_FILENAME_CHARS = '\x00-\x1f,\|\\/:\*\?"<>'
 INVALID_WINDOWS_FILENAME_ROOTS = [
   'CON',
