@@ -185,6 +185,10 @@ class HydraServer(object):
       return False
     return True
     
+  def send_all_clients_command(self, cmd):
+    for c in self.clients:
+      send_client_command(c, cmd)
+    
   def send_client_command(self, client, cmd):
     """
     Fill in docstring

@@ -68,7 +68,7 @@ except:
 try:
   import pymongo
 except:
-  pass
+  pymongo = None
 # On Windows systems check for WindowsError for platform specific exception handling
 try:
   dir(WindowsError)
@@ -134,6 +134,7 @@ DEFAULT_CONFIG = {
   'top_n_count': 100,
   'file_size_historgram': FILE_SIZE_HISTOGRAM,
   'file_age_histogram': FILE_AGE_HISTOGRAM,
+  'db_table': 'files',
   #DEL: 'file_size_historgram': FILE_SIZE_HISTOGRAM,
   #DEL: 'file_age_histogram': FILE_AGE_HISTOGRAM,
 }
@@ -168,6 +169,7 @@ EXTRA_STATS_ARRAY = [
 EXTRA_STATS_MAX_ARRAY = [
   'max_files_in_dir_per_dir_depth',         # [Array] Holds the maximum file count for any directory at a given depth from the root.
 ]
+UI_STAT_POLL_INTERVAL = 30
 
 
 def incr_per_depth(data_array, index, val):
@@ -245,9 +247,8 @@ class WorkerHandler(HydraWorker):
       db_type = args['db']['db_type']
       self.log.debug("Using DB of type: %s for stats collection"%db_type)
       if db_type == 'mongodb':
-        if not args['db']['mongodb_name']:
-          self.log.critical('DB type of %s specified without a DB name. Please use --mongodb_name parameter'%db_type)
-          sys.exit(1)
+        if not args['db']['db_name'] and not args['db']['db_svr_name']:
+          self.log.warn('DB type of %s specified without a DB name. Expecting DB name to be updated by client or use --db_name parameter'%db_type)
     else:
       self.log.debug("No DB type specified. Using in memory stats collection.")
     
@@ -255,14 +256,25 @@ class WorkerHandler(HydraWorker):
     # the correct logger name
     self.audit = logging.getLogger('audit')
     
-  def init_process(self):
+  def init_db(self):
     if self.args.get('db') and self.args['db'].get('db_type') != None:
       db_type = self.args['db']['db_type']
       if db_type == 'mongodb':
-        self.log.debug("Connecting to MongoDB instance")
-        self.db_client = pymongo.MongoClient(self.args['db']['mongodb_host'], self.args['db']['mongodb_port'])
-        self.db = self.db_client[self.args['db']['mongodb_name']]
-        self.log.debug("MongoDB connected")
+        if not self.db_client:
+          self.log.debug("Connecting to MongoDB instance")
+          self.db_client = pymongo.MongoClient(
+              self.args['db']['db_host'], self.args['db']['db_port'],
+              appname=__title__,
+          )
+        if self.args['db']['db_name']:
+          self.db = self.db_client[self.args['db']['db_name']]
+          self.log.debug("MongoDB client connected")
+        else:
+          self.db = None
+          self.log.warn("MongoDB client connected without DB name")
+    
+  def init_process(self):
+    self.init_db()
     
   def init_stats(self):
     super(WorkerHandler, self).init_stats()
@@ -296,7 +308,7 @@ class WorkerHandler(HydraWorker):
   def flush_cache(self):
     if self.cache_idx > 0:
       if self.db:
-        result = self.db.fs_audit.insert_many(
+        result = self.db[self.args['db_table']].insert_many(
             self.cache[0:self.cache_idx],
             ordered=False,
             bypass_document_validation=True,
@@ -396,6 +408,19 @@ class WorkerHandler(HydraWorker):
       return False
     return True
     
+  def handle_extended_ops(self, client_msg):
+    if not client_msg:
+      return True
+    cmd = client_msg.get('op')
+    if cmd == 'update_db_name':
+      self.args['db']['db_name'] = client_msg.get('name')
+      self.init_db()
+      if self.db:
+        doc_count = self.db[self.args['db_table']].count_documents({})
+    else:
+      self.log.warn("Unhandled worker command: %s"%client_msg)
+    return True
+    
   def handle_stats_collection(self):
     self.flush_cache()
     
@@ -406,14 +431,25 @@ class WorkerHandler(HydraWorker):
 class ClientProcessor(HydraClient):
   def __init__(self, worker_class, args={}):
     super(ClientProcessor, self).__init__(worker_class, args)
-    if args.get('db') and args['db'].get('db_type') != None:
-      db_type = args['db']['db_type']
+    self.init_db(recreate_db=args.get('db', {}).get('recreate_db'))
+  
+  def init_db(self, init_client=True, init_db=True, recreate_db=False):
+    if self.args.get('db') and self.args['db'].get('db_type') != None:
+      db_type = self.args['db']['db_type']
       if db_type == 'mongodb':
-        if not args['db']['mongodb_name']:
-          self.log.critical('DB type of %s specified without a DB name. Please use --mongodb_name parameter'%db_type)
-          sys.exit(1)
-        self.db_client = pymongo.MongoClient(args['db']['mongodb_host'], args['db']['mongodb_port'])
-        self.db = self.db_client[args['db']['mongodb_name']]
+        if init_client:
+          self.db_client = pymongo.MongoClient(
+              self.args['db']['db_host'], self.args['db']['db_port'],
+              appname=__title__,
+          )
+        if self.args['db']['db_name']:
+          if recreate_db:
+            self.db_client.drop_database(self.args['db']['db_name'])
+          if init_db or init_client:
+            self.db = self.db_client[self.args['db']['db_name']]
+        else:
+          self.log.warn('DB type of %s specified without a DB name. Expecting DB name to be updated by server or use --db_name parameter'%db_type)
+          self.db = None
       else:
         self.log.critical('Unknown DB type of %s specified.'%db_type)
         sys.exit(1)
@@ -443,8 +479,36 @@ class ClientProcessor(HydraClient):
         for s in EXTRA_STATS_MAX_ARRAY:
           max_to_per_depth(self.stats[s], set[w]['stats'][s])
     
-  #def handle_extended_server_cmd(self, raw_data):
-  #  return True
+  def handle_extended_server_cmd(self, svr_msg):
+    cmd = svr_msg.get('cmd')
+    if cmd == 'recreate_db':
+      if not self.db_client:
+        self.log.warn("Recreate DB requested but no connection to DB exists")
+        return True
+      if not self.db:
+        self.log.warn("Recreate DB requested, connection to DB exists but we have no DB name.")
+        return True
+      self.db_client.drop_database(self.args['db']['db_name'])
+      self.db = self.db_client[self.args['db']['db_name']]
+    elif cmd == 'update_db_name':
+      self.args['db']['db_name'] = svr_msg.get('name')
+      self.init_db(init_client=False)
+      self.send_all_workers({
+          'op': 'update_db_name',
+          'name': svr_msg.get('name'),
+      })
+    #elif cmd == 'update_db_conn':
+    #  self.args['db']['db_host'] = cmd.get('host')
+    #  self.args['db']['db_port'] = cmd.get('port')
+    #  self.init_db()
+    #  self.send_all_workers({
+    #      'op': 'update_settings',
+    #      'settings': self.args,
+    #  })
+    else:
+      self.log.warn("Unhandled extended server command: %s"%svr_msg)
+      return False
+    return True
 
   def handle_update_settings(self, cmd):
     self.args.update(cmd['settings'])
@@ -543,11 +607,40 @@ class ServerProcessor(HydraServer):
           'settings': settings,
         }
     )
+    if self.args['db']['db_svr_name']:
+      self.send_client_command(
+        client,
+        {
+          'cmd': 'update_db_name',
+          'name': self.args['db']['db_name'],
+        }
+      )
+    if self.args.get('recreate_db'):
+      self.send_client_command(
+        client,
+        {
+          'cmd': 'recreate_db',
+        }
+      )
     
   def handle_extended_client_cmd(self, cmd):
     return True
     
   def handle_extended_server_cmd(self, cmd):
+    ui_cmd = cmd.get('cmd')
+    if ui_cmd == 'recreate_db':
+      self.args['recreate_db'] = True
+      self.send_all_clients_command({'cmd': 'recreate_db'})
+    elif ui_cmd == 'update_db_name':
+      self.args['db']['db_name'] = cmd.get('name')
+    elif ui_cmd == 'update_db_conn':
+      self.args['db']['db_host'] = cmd.get('host')
+      self.args['db']['db_port'] = cmd.get('port')
+    elif ui_cmd == 'stat_consolidate':
+      print("DEBUG: Got stat consolidate")
+    else:
+      self.log.warn("Unhandled extended server command: %s"%cmd)
+      return False
     return True
     
 '''
@@ -572,14 +665,20 @@ def AddParserOptions(parser, raw_cli):
                       default=False,
                       help="Provide verbose output.")
 
-    op_group = optparse.OptionGroup(parser, "Processing paths",
-                           "Options to add paths for processing.")
+    op_group = optparse.OptionGroup(parser, "Processing",
+                           "Options for processing.")
     op_group.add_option("--path", "-p",
                       default=None,
                       action="store",
                       help="Path to scan. Use of full paths is recommended as "
                            "clients will interpret this path according to their"
                            " own current working directory.")
+    op_group.add_option("--stat_consolidate",
+                      action="store_true",
+                      default=False,
+                      help="Instead of scanning a directory path, process data from existing database information."
+                           " Using this option will prevent an actual tree walk. If a path is specified as well the"
+                           " path will be used to adjust for the path depth calculation only.")
     parser.add_option_group(op_group)
 
     op_group = optparse.OptionGroup(parser, "DB options")
@@ -589,16 +688,24 @@ def AddParserOptions(parser, raw_cli):
                       default=None,
                       choices=db_type_choices,
                       help="DB type if any to use for storing stats [Choices: %s]"%(','.join(db_type_choices)))
-    op_group.add_option("--mongodb_name",
+    op_group.add_option("--db_name",
                       default=None,
                       help="Name of the MongoDB database to perform operations")
-    op_group.add_option("--mongodb_host",
+    op_group.add_option("--db_host",
                       default='127.0.0.1',
                       help="Host of MongoDB instance [Default: %default]")
-    op_group.add_option("--mongodb_port",
+    op_group.add_option("--db_port",
                       type="int",
                       default=27017,
                       help="Port of MongoDB instance [Default: %default]")
+    op_group.add_option("--recreate_db",
+                      action="store_true",
+                      default=False,
+                      help="Drop and re-create DB if it exists")
+    op_group.add_option("--db_svr_name",
+                      action="store_true",
+                      default=False,
+                      help="When enabled, the server will update the clients with the DB name to use.")
     parser.add_option_group(op_group)
 
     op_group = optparse.OptionGroup(parser, "Tuning parameters")
@@ -623,6 +730,10 @@ def AddParserOptions(parser, raw_cli):
                       type="int",
                       default=DEFAULT_CONFIG['default_stat_array_len'],
                       help=optparse.SUPPRESS_HELP)
+    op_group.add_option("--stat_poll_interval",
+                      type="float",
+                      default=UI_STAT_POLL_INTERVAL,
+                      help="Polling time in seconds (float) between UI statistics calls [Default: %default]")
     parser.add_option_group(op_group)
 
     op_group = optparse.OptionGroup(parser, "Logging, auditing and debug",
@@ -662,10 +773,18 @@ def main():
   )
   # Create main CLI parser
   AddParserOptions(parser, cli_options)
-  (options, args) = parser.parse_args(cli_options)
+  try:
+    (options, args) = parser.parse_args(cli_options)
+  except:
+    parser.print_help()
+    sys.exit(1)
   if options.server is False and options.connect is None:
     parser.print_help()
     print("You must specify running as a server or client")
+    sys.exit(1)
+  if options.db_type == 'mongodb' and not pymongo:
+    parser.print_help()
+    print("pymongo library not installed. Try installing with: pip install pymongo")
     sys.exit(1)
 
   # Setup logging and use the --debug CLI option to set the logging level
@@ -703,10 +822,11 @@ def main():
     log.info("Starting up the server")
     # Get paths to process from parsed CLI options
     proc_paths = HydraUtils.get_processing_paths(options.path)
-    if len(proc_paths) < 1:
-      log.critical('A path via command line or a path file must be specified.')
+    if len(proc_paths) < 1 and not options.stat_consolidate:
+      log.critical('A path via command line or stat_consolidate must be specified.')
       sys.exit(1)
 
+    path_depth_adj = 0
     start_time = 0
     end_time = 0
     startup = True
@@ -720,7 +840,8 @@ def main():
     # /home has a depth of 1
     # What we do is take the starting path, calculates its depth and send this
     # to all components so that they can adjust for the start depth.
-    path_depth_adj = path_depth(proc_paths[0])
+    if len(proc_paths) > 0:
+      path_depth_adj = path_depth(proc_paths[0])
       
     svr = HydraServerProcess(
         addr=options.listen,
@@ -736,23 +857,34 @@ def main():
           'default_stat_array_len': options.default_stat_array_len,
           'db': {
             'db_type': options.db_type,
-            'mongodb_name': options.mongodb_name,
-            'mongodb_host': options.mongodb_host,
-            'mongodb_port': options.mongodb_port,
+            'db_name': options.db_name,
+            'db_host': options.db_host,
+            'db_port': options.db_port,
+            'db_svr_name': options.db_svr_name,
           }
         },
     )
-    svr.start()
+
     # EXAMPLE:
-    # The following line sends any paths from the CLI to the server to get ready
-    # for processing as soon as clients connect. This could be done instead from
-    # a UI or even via a TCP message to the server. For the purpose of this
-    # example, this is the simplest method.
-    svr.send({'cmd': 'submit_work', 'paths': proc_paths})
+    # Handle specific command line switches
+    if options.db_svr_name:
+      svr.send({'cmd': 'update_db_name', 'name': options.db_name})
+    if options.stat_consolidate:
+      svr.send({'cmd': 'stat_consolidate'})
+    else:
+      if options.recreate_db:
+        svr.send({'cmd': 'recreate_db'})
+      # EXAMPLE:
+      # The following line sends any paths from the CLI to the server to get ready
+      # for processing as soon as clients connect. This could be done instead from
+      # a UI or even via a TCP message to the server. For the purpose of this
+      # example, this is the simplest method.
+      svr.send({'cmd': 'submit_work', 'paths': proc_paths})
+    svr.start()
     
     while True:
       try:
-        readable, _, _ = select.select([svr], [], [])
+        readable, _, _ = select.select([svr], [], [], options.stat_poll_interval)
         if len(readable) > 0:
           msg = svr.recv()
           
@@ -795,6 +927,9 @@ def main():
             ))
           else:
             log.info("UI received: %s"%cmd)
+        else:
+          # We got a timeout from select
+          svr.send({'cmd': 'get_stats'})
       except KeyboardInterrupt as ke:
         log.info("Terminate signal received, shutting down")
         break
@@ -820,15 +955,20 @@ def main():
         'default_stat_array_len': options.default_stat_array_len,
         'db': {
           'db_type': options.db_type,
-          'mongodb_name': options.mongodb_name,
-          'mongodb_host': options.mongodb_host,
-          'mongodb_port': options.mongodb_port,
+          'db_name': options.db_name,
+          'db_host': options.db_host,
+          'db_port': options.db_port,
+          'db_svr_name': options.db_svr_name,
+          'recreate_db': options.recreate_db,
         }
     })
     client.set_workers(options.num_workers)
     client.start()
     log.info("Waiting until client exits")
-    client.join()
+    try:
+      client.join()
+    except:
+      pass
     log.info("Client exiting")
 
 if __name__ == "__main__" or __file__ == None:
