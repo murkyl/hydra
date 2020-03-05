@@ -120,7 +120,7 @@ class HydraServer(object):
     """
     return True
 
-  def handle_extended_client_cmd(self, cmd):
+  def handle_extended_client_cmd(self, client, cmd):
     """
     Called by the main loop when an unknown command is found
     This can be used to support custom commands from a HydraClient without
@@ -382,7 +382,7 @@ class HydraServer(object):
     elif command == 'stats':
       self._process_client_stats(client, cmd)
     else:
-      if not self.handle_extended_client_cmd(cmd):
+      if not self.handle_extended_client_cmd(client, cmd):
         self.log.warn("Unhandled client command: %s"%cmd)
   
   def _cleanup_client(self, client):
