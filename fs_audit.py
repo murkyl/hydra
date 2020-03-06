@@ -25,7 +25,7 @@ __usage__="""%prog [options]"""
 __description__="""====================
 Requirements:
   python 2.7+
-
+  pymongo (optional)
 ====================
 """
 
@@ -42,6 +42,7 @@ import optparse
 import HydraUtils
 import stat
 import json
+import fs_audit_export
 from HydraWorker import HydraWorker
 from HydraClient import HydraClient
 from HydraClient import HydraClientProcess
@@ -134,9 +135,10 @@ DEFAULT_CONFIG = {
   'cache_size': 10000,                      # Number of file data sets to store in memory before flushing
   'default_stat_array_len': 16,             # Default size of statistics arrays
   'extend_stat_array_incr': 16,             # Size of each extension of the stats array
+  'number_base': 10,
 }
 
-DEFAULT_STATS_CONFIG = {  
+DEFAULT_STATS_CONFIG = {
   'top_n_file_size': 100,
   'top_n_file_size_by_gid': 100,
   'top_n_file_size_by_uid': 100,
@@ -144,7 +146,8 @@ DEFAULT_STATS_CONFIG = {
   'file_atime_histogram': FILE_AGE_HISTOGRAM,
   'file_ctime_histogram': FILE_AGE_HISTOGRAM,
   'file_mtime_histogram': FILE_AGE_HISTOGRAM,
-  'db_table': 'files',
+  'files_table': 'files',
+  'stats_table': 'cstats',
 }
 
 # EXAMPLE:
@@ -301,7 +304,7 @@ class WorkerHandler(HydraWorker):
   def flush_cache(self):
     if self.cache_idx > 0:
       if self.db:
-        result = self.db[self.args['db_table']].insert_many(
+        result = self.db[self.args['files_table']].insert_many(
             self.cache[0:self.cache_idx],
             ordered=False,
             bypass_document_validation=True,
@@ -399,8 +402,6 @@ class WorkerHandler(HydraWorker):
     if cmd == 'update_db_name':
       self.args['db']['db_name'] = client_msg.get('name')
       self.init_db()
-      if self.db:
-        doc_count = self.db[self.args['db_table']].count_documents({})
     else:
       self.log.warn("Unhandled worker command: %s"%client_msg)
     return True
@@ -452,7 +453,7 @@ class ClientProcessor(HydraClient):
     for s in EXTRA_STATS_MAX_ARRAY:
       self.stats[s] = [0]*self.args['default_stat_array_len']
       
-  def init_stats_historgram(self, stat_state):
+  def init_stats_histogram(self, stat_state):
     # Histogram statistics
     stat_state['hist_file_count_by_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_atime'] = HistogramStat2D(self.args.get('file_atime_histogram'), self.args.get('file_size_histogram'))
@@ -480,9 +481,19 @@ class ClientProcessor(HydraClient):
           add_to_per_depth(self.stats[s], set[w]['stats'][s])
         for s in EXTRA_STATS_MAX_ARRAY:
           max_to_per_depth(self.stats[s], set[w]['stats'][s])
+    if self.db:
+      if self.stats['processed_files'] > 0:
+        result = self.db[self.args['stats_table']].replace_one(
+            {'type': 'client'},
+            {'type': 'client', 'stats': self.stats},
+            upsert=True,
+        )
           
   def consolidate_stats_db(self):
-    self.init_stats_historgram(self.stats_histogram)
+    # When we read data from a DB we need to calculate both basic and histogram
+    # statistics
+    self.init_stats(self.stats)
+    self.init_stats_histogram(self.stats_histogram)
     hist_file_count_by_size = self.stats_histogram['hist_file_count_by_size']
     hist_file_count_by_atime = self.stats_histogram['hist_file_count_by_atime']
     hist_file_count_by_ctime = self.stats_histogram['hist_file_count_by_ctime']
@@ -494,9 +505,12 @@ class ClientProcessor(HydraClient):
     top_n_files_sid = self.stats_histogram['top_n_file_size_by_sid']
     top_n_files_uid = self.stats_histogram['top_n_file_size_by_uid']
     now = self.args.get('reference_time', time.time())
+    bs = self.args['block_size']
     
     if self.db:
-      for record in self.db[self.args['db_table']].find():
+      for record in self.db[self.args['stats_table']].find({"type": "client"}, limit=1):
+        self.stats = dict(record.get('stats'))
+      for record in self.db[self.args['files_table']].find():
         file_size = record['filesize']
         hist_file_count_by_size.insert_data(file_size)
         hist_file_count_by_atime.insert_data(now - record['atime'], file_size)
@@ -538,7 +552,6 @@ class ClientProcessor(HydraClient):
     #      'settings': self.args,
     #  })
     elif cmd == 'return_stats_db':
-      self.consolidate_stats()
       self.consolidate_stats_db()
       self._send_server({'cmd': 'stats_db', 'stats': self.stats, 'stats_histogram': self.stats_histogram})
     else:
@@ -568,7 +581,7 @@ class ServerProcessor(HydraServer):
     for s in EXTRA_STATS_MAX_ARRAY:
       stat_state[s] = [0]*self.args['default_stat_array_len']
   
-  def init_stats_historgram(self, stat_state):
+  def init_stats_histogram(self, stat_state):
     # Histogram statistics
     stat_state['hist_file_count_by_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_atime'] = HistogramStat2D(self.args.get('file_atime_histogram'), self.args.get('file_size_histogram'))
@@ -648,7 +661,7 @@ class ServerProcessor(HydraServer):
     
   def consolidate_stats_db(self):
     self.stats_histogram = {}
-    self.init_stats_historgram(self.stats_histogram)
+    self.init_stats_histogram(self.stats_histogram)
     for set in [self.clients, self.shutdown_clients]:
       for c in set:
         if not set[c]['stats_histogram']:
@@ -659,22 +672,18 @@ class ServerProcessor(HydraServer):
             self.stats_histogram[k].merge(set[c]['stats_histogram'][k])
         
   def export_stats(self):
-    print("DEBUG:****************** ALL STAT RECEIVED, EXPORT")
-    #print("***** EXTENSIONS *****")
-    #print(self.stats_histogram['extensions'].get_bins())
-    #print("***** CATEGORY *****")
-    #print(self.stats_histogram['category'].get_bins())
-    #print("***** FILE COUNT BY SIZE *****")
-    #print(self.stats_histogram['hist_file_count_by_size'].get_histogram())
-    #print("***** FILE COUNT BY ATIME *****")
-    #print(self.stats_histogram['hist_file_count_by_atime'].get_flattened_histogram())
-    #print("***** FILE COUNT BY CTIME *****")
-    #print(self.stats_histogram['hist_file_count_by_ctime'].get_flattened_histogram())
-    #print("***** FILE COUNT BY MTIME *****")
-    #print(self.stats_histogram['hist_file_count_by_mtime'].get_flattened_histogram())
-    #print("***** TOP N FILES *****")
-    #print(self.stats_histogram['top_n_file_size'].get_rank_list())
-
+    if self.args.get('excel_filename'):
+      fs_audit_export.export_xlsx(
+          {
+            'basic': self.stats,
+            'detailed': self.stats_histogram,
+            'config': {
+                'block_size': self.args.get('block_size'),
+                'number_base': self.args.get('number_base'),
+            }
+          },
+          self.args.get('excel_filename'),
+      )
   
   def handle_client_connected(self, client):
     settings = {
@@ -783,6 +792,9 @@ def AddParserOptions(parser, raw_cli):
                       help="Instead of scanning a directory path, process data from existing database information."
                            " Using this option will prevent an actual tree walk. If a path is specified as well the"
                            " path will be used to adjust for the path depth calculation only.")
+    op_group.add_option("--excel_output",
+                      default=None,
+                      help="Specify a file name here to output stats results to an Excel formatted file")
     parser.add_option_group(op_group)
 
     op_group = optparse.OptionGroup(parser, "DB options")
@@ -947,7 +959,8 @@ def main():
     if len(proc_paths) > 0:
       path_depth_adj = path_depth(proc_paths[0])
       
-    svr_args = dict(DEFAULT_STATS_CONFIG)
+    svr_args = dict(DEFAULT_CONFIG)
+    svr_args.update(DEFAULT_STATS_CONFIG)
     svr_args.update({
       'logger_cfg': logger_config,
       'dirs_per_idle_client': options.dirs_per_client,
@@ -963,7 +976,8 @@ def main():
         'db_host': options.db_host,
         'db_port': options.db_port,
         'db_svr_name': options.db_svr_name,
-      }
+      },
+      'excel_filename': options.excel_output,
     })
     svr = HydraServerProcess(
         addr=options.listen,
@@ -1047,7 +1061,8 @@ def main():
     svr.join(10)
   else:
     log.info("Starting up client")
-    client_args = dict(DEFAULT_STATS_CONFIG)
+    client_args = dict(DEFAULT_CONFIG)
+    client_args.update(DEFAULT_STATS_CONFIG)
     client_args.update({
         # Basic arguments
         'svr': options.connect,

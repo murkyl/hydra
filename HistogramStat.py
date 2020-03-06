@@ -111,6 +111,18 @@ CATEGORY_COMPRESSION_EXTENSIONS = [
   'zz',     # 
 ]
 
+CATEGORY_DATA_EXTENSIONS = [
+  # Microsoft Access
+  'accdb', 'accdt', 'ade', 'adp',
+  'db',     # Generic database file
+  'db2',    #
+  'db3',    #
+  'dbs',    # 
+  'json',   # JSON file
+  'mdb',    # 
+  'sqlite', # SQLite
+]
+
 CATEGORY_DOCUMENT_EXTENSIONS = [
   '123',    # Lotus 1-2-3
   '12m',    # Lotus 1-2-3
@@ -221,6 +233,7 @@ CATEGORY_SCRIPT_EXTENSIONS = [
 ]
 
 CATEGORY_SOURCE_CODE_EXTENSIONS = [
+  'asm',    # General assembly code
   # C and C++
   'c', 'cc', 'cpp', 'cxx', 'c++', 'h', 'hpp', 'hxx',
   'cs',     # C#
@@ -229,6 +242,7 @@ CATEGORY_SOURCE_CODE_EXTENSIONS = [
   'go',     # Go
   # Java
   'class', 'java',
+  'js',     # Javascript
   # Rust
   'rs', 'rlib',
   'swift',  # Swift
@@ -298,6 +312,7 @@ CATEGORIES = {
   'audio': CATEGORY_AUDIO_EXTENSIONS,
   'compressed': CATEGORY_COMPRESSION_EXTENSIONS,
   'document': CATEGORY_DOCUMENT_EXTENSIONS,
+  'data': CATEGORY_DATA_EXTENSIONS,
   'image': CATEGORY_IMAGE_EXTENSIONS,
   'scripts': CATEGORY_SCRIPT_EXTENSIONS,
   'source_code': CATEGORY_SOURCE_CODE_EXTENSIONS,
