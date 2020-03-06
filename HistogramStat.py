@@ -5,12 +5,14 @@ Module description here
 __title__ = "HistogramStat"
 __version__ = "1.0.0"
 __all__ = [
+  "get_file_category",
+  "norm_func_identity",
   "HashBinCountAndValue",
   "HistogramStat",
   "HistogramStatCountAndValue",
   "HistogramStat2D",
-  "get_file_category",
-  "norm_func_identity",
+  "RankItems",
+  "RankItemsByKey",
 ]
 __author__ = "Andrew Chung <acchung@gmail.com>"
 __license__ = "MIT"
@@ -169,7 +171,7 @@ CATEGORY_IMAGE_EXTENSIONS = [
   'ico',    # *ICOn
   'icon',   # Generic icon
   'img',    # IMaGe (Various)
-  'jpeg',   # *Joing Pictures Experts Group
+  'jpeg',   # *Joint Pictures Experts Group
   'jpg',    # *Joint Pictures experts Group
   'nef',    # Nikon RAW format
   'pam',    # *Portable Arbitrary Map
@@ -440,6 +442,8 @@ class HistogramStat():
     self.cache_idx = -1
     
   def merge(self, other):
+    if not isinstance(other, HistogramStat):
+      raise(TypeError('An object of type HistogramStat required'))
     if set(self.bin_config).difference(other.bin_config):
       raise(ValueError("The 2 histogram stats must have the same bin configuration"))
     for k in self.bin_config:
@@ -497,6 +501,8 @@ class HistogramStatCountAndValue(HistogramStat):
     self.cache_idx = -1
   
   def merge(self, other):
+    if not isinstance(other, HistogramStatCountAndValue):
+      raise(TypeError('An object of type HistogramStatCountAndValue required'))
     if set(self.bin_config).difference(other.bin_config):
       raise(ValueError("The 2 histogram stats must have the same bin configuration"))
     for k in self.bin_config:
@@ -591,9 +597,69 @@ class HistogramStat2D(HistogramStat):
     self.cache_idx = -1
   
   def merge(self, other):
+    if not isinstance(other, HistogramStat2D):
+      raise(TypeError('An object of type HistogramStat2D required'))
     if set(self.bin_config).difference(other.bin_config) or set(self.bin2_config).difference(other.bin2_config):
       raise(ValueError("The 2 histogram stats 2D must have the same bin configuration"))
     for k in self.bin_config + ['other']:
       self.bins[k][0] += other.bins[k][0]
       self.bins[k][1] += other.bins[k][1]
       self.bins[k][2].merge(other.bins[k][2])
+
+
+class RankItems():
+  def __init__(self, max_count=100):
+    self.max_count = max_count
+    # Each item in the ranked_items list is an array of [rank, data]
+    self.ranked_items = [[-1, None]]*max_count
+    
+  def get_rank_list(self):
+    # Filter out any unused entries which are denoted by a -1 for the rank
+    start_idx = -1
+    for i in self.ranked_items:
+      if i[0] != -1:
+        start_idx += 1
+        break
+      else:
+        start_idx += 1
+    if start_idx == -1:
+      return []
+    return self.ranked_items[start_idx:]
+    
+  def insert_data(self, rank, data):
+    if rank > self.ranked_items[0][0]:
+      self.ranked_items[0] = [rank, data]
+      self.ranked_items.sort(key=lambda x: x[0])
+    
+  def merge(self, other):
+    if not isinstance(other, RankItems):
+      raise(TypeError('An object of type RankItems required'))
+    self.ranked_items.extend(other.ranked_items)
+    self.ranked_items.sort(key=lambda x: x[0])
+    self.ranked_items = self.ranked_items[-self.max_count:]
+
+
+class RankItemsByKey():
+  def __init__(self, max_count=100):
+    self.max_count = max_count
+    self.ranked_by_key = {}
+    
+  def get_rank_list(self):
+    data = {}
+    for key in self.ranked_by_key:
+      data[key] = self.ranked_by_key[key].get_rank_list()
+    return data
+    
+  def insert_data(self, key, rank, data):
+    if key not in self.ranked_by_key:
+      self.ranked_by_key[key] = RankItems(self.max_count)
+    self.ranked_by_key[key].insert_data(rank, data)
+    
+  def merge(self, other):
+    if not isinstance(other, RankItemsByKey):
+      raise(TypeError('An object of type RankItemsByKey required'))
+    for key in other.ranked_by_key:
+      rank_list = self.ranked_by_key.get(key)
+      if not rank_list:
+        self.ranked_by_key[key] = RankItems(self.max_count)
+      self.ranked_by_key[key].merge(other.ranked_by_key[key])

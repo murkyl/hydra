@@ -51,6 +51,8 @@ from HistogramStat import HistogramStat
 from HistogramStat import HistogramStatCountAndValue
 from HistogramStat import HistogramStat2D
 from HistogramStat import HashBinCountAndValue
+from HistogramStat import RankItems
+from HistogramStat import RankItemsByKey
 from HistogramStat import get_file_category
 try:
   import pathlib
@@ -128,16 +130,16 @@ FILE_AGE_HISTOGRAM = [  # File size histogram table to see how many files fall w
 ]
 
 DEFAULT_CONFIG = {
-  'cache_size': 10000,                      # Number of file data sets to store in memory before flushing
   'block_size': 8192,                       # Block size of file system
+  'cache_size': 10000,                      # Number of file data sets to store in memory before flushing
   'default_stat_array_len': 16,             # Default size of statistics arrays
   'extend_stat_array_incr': 16,             # Size of each extension of the stats array
 }
 
 DEFAULT_STATS_CONFIG = {  
-  'top_n_file_size_by_uid': 100,
-  'top_n_file_size_by_gid': 100,
   'top_n_file_size': 100,
+  'top_n_file_size_by_gid': 100,
+  'top_n_file_size_by_uid': 100,
   'file_size_histogram': FILE_SIZE_HISTOGRAM,
   'file_atime_histogram': FILE_AGE_HISTOGRAM,
   'file_ctime_histogram': FILE_AGE_HISTOGRAM,
@@ -456,12 +458,12 @@ class ClientProcessor(HydraClient):
     stat_state['hist_file_count_by_atime'] = HistogramStat2D(self.args.get('file_atime_histogram'), self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_ctime'] = HistogramStat2D(self.args.get('file_ctime_histogram'), self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_mtime'] = HistogramStat2D(self.args.get('file_mtime_histogram'), self.args.get('file_size_histogram'))
-    #DEBUG: stat_state['topn_file_size'] = []
     stat_state['extensions'] = HashBinCountAndValue()
     stat_state['category'] = HashBinCountAndValue()
-    # TODO:
-    # Need track total size and file count by file category (video, images, audio, office, etc.)
-    # Need largest files by User and Group
+    stat_state['top_n_file_size'] = RankItems(self.args.get('top_n_file_size'))
+    stat_state['top_n_file_size_by_gid'] = RankItemsByKey(self.args.get('top_n_file_size_by_gid'))
+    stat_state['top_n_file_size_by_sid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
+    stat_state['top_n_file_size_by_uid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
 
   def consolidate_stats(self):
     super(ClientProcessor, self).consolidate_stats()
@@ -487,6 +489,10 @@ class ClientProcessor(HydraClient):
     hist_file_count_by_mtime = self.stats_histogram['hist_file_count_by_mtime']
     extensions = self.stats_histogram['extensions']
     category = self.stats_histogram['category']
+    top_n_files = self.stats_histogram['top_n_file_size']
+    top_n_files_gid = self.stats_histogram['top_n_file_size_by_gid']
+    top_n_files_sid = self.stats_histogram['top_n_file_size_by_sid']
+    top_n_files_uid = self.stats_histogram['top_n_file_size_by_uid']
     now = self.args.get('reference_time', time.time())
     
     if self.db:
@@ -498,13 +504,10 @@ class ClientProcessor(HydraClient):
         hist_file_count_by_mtime.insert_data(now - record['mtime'], file_size)
         extensions.insert_data(record['ext'], file_size)
         category.insert_data(get_file_category(record['ext']), file_size)
-        # TODO: 
-        # sid = record['sid']
-        # uid = record['uid']
-        # gid = record['gid']
-        # topn_file_size
-        # topn_file_size_by_uid
-        # topn_file_size_by_gid
+        top_n_files.insert_data(file_size, record)
+        top_n_files_gid.insert_data(record.get('gid'), file_size, record)
+        top_n_files_sid.insert_data(record.get('sid'), file_size, record)
+        top_n_files_uid.insert_data(record.get('uid'), file_size, record)
     else:
       self.log.warn("DB not connected and consolidate_stats_db_called")
     
@@ -571,11 +574,12 @@ class ServerProcessor(HydraServer):
     stat_state['hist_file_count_by_atime'] = HistogramStat2D(self.args.get('file_atime_histogram'), self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_ctime'] = HistogramStat2D(self.args.get('file_ctime_histogram'), self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_mtime'] = HistogramStat2D(self.args.get('file_mtime_histogram'), self.args.get('file_size_histogram'))
-    #DEBUG: stat_state['topn_file_size'] = []
     stat_state['extensions'] = HashBinCountAndValue()
     stat_state['category'] = HashBinCountAndValue()
-    # TODO:
-    # Need largest files by User and Group
+    stat_state['top_n_file_size'] = RankItems(self.args.get('top_n_file_size'))
+    stat_state['top_n_file_size_by_gid'] = RankItemsByKey(self.args.get('top_n_file_size_by_gid'))
+    stat_state['top_n_file_size_by_sid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
+    stat_state['top_n_file_size_by_uid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
 
   def consolidate_stats(self):
     '''
@@ -666,8 +670,11 @@ class ServerProcessor(HydraServer):
     #print(self.stats_histogram['hist_file_count_by_atime'].get_flattened_histogram())
     #print("***** FILE COUNT BY CTIME *****")
     #print(self.stats_histogram['hist_file_count_by_ctime'].get_flattened_histogram())
-    print("***** FILE COUNT BY MTIME *****")
-    print(self.stats_histogram['hist_file_count_by_mtime'].get_flattened_histogram())
+    #print("***** FILE COUNT BY MTIME *****")
+    #print(self.stats_histogram['hist_file_count_by_mtime'].get_flattened_histogram())
+    #print("***** TOP N FILES *****")
+    #print(self.stats_histogram['top_n_file_size'].get_rank_list())
+
   
   def handle_client_connected(self, client):
     settings = {
