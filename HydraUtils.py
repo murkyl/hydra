@@ -391,7 +391,7 @@ def socket_send(sock, data):
   bytes_len = len(bytes_data)
   header = struct.pack('!L', bytes_len)
   sock.sendall(header + bytes_data)
-  return (bytes_len + 4)
+  return (bytes_len + len(header))
   
 class IndentedHelpFormatterWithNL(optparse.IndentedHelpFormatter):
     def format_description(self, description):
