@@ -532,7 +532,7 @@ class HistogramStat2D(HistogramStat):
     self.value_norm_func = norm
     # Each bin is an array of [item_count, running_total, histogram]
     for bin in self.bin_config + ['other']:
-      self.bins[bin] = [0, 0, HistogramStatCountAndValue(bin2_config, cache=cache, norm=norm2)]
+      self.bins[bin] = [0, 0, HistogramStatCountAndValue(self.bin2_config, cache=cache, norm=norm2)]
 
   def get_bin2_config(self):
     return self.bin2_config[:]
