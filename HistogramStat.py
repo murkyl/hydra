@@ -379,6 +379,7 @@ class HashBinCountAndValue():
         self.bins[key] = [other_bins[key]['count'], other_bins[key]['total']]
     # Combine the keys
     self.keys_cache = list(set().union(self.keys_cache, other.keys_cache))
+    self.item_count += other.item_count
     
 
 class HistogramStat():
@@ -386,9 +387,10 @@ class HistogramStat():
     self.bin_config = bin_config[:]
     self.bin_length = len(self.bin_config)
     self.bins = {}
+    self.item_count = 0
+    # Variables below should not be merged
     self.cache = [0]*cache
     self.cache_idx = -1
-    self.item_count = 0
     self.cache_size = cache
     if len(self.bin_config) < 1:
       raise ValueError('bin_config must be a list with at least 1 integer element')
@@ -420,7 +422,7 @@ class HistogramStat():
     hist_array.append(self.bins['other'])
     return hist_array
     
-  def get_item_count(self):
+  def __len__(self):
     return self.item_count
     
   def flush(self):
@@ -463,6 +465,7 @@ class HistogramStat():
       raise(ValueError("The 2 histogram stats must have the same bin configuration"))
     for k in self.bin_config:
       self.bins[k] += other.bins[k]
+    self.item_count += other.item_count
     
 class HistogramStatCountAndValue(HistogramStat):
   def __init__(self, bin_config, cache=10240, norm=norm_func_identity):
@@ -523,6 +526,7 @@ class HistogramStatCountAndValue(HistogramStat):
     for k in self.bin_config:
       self.bins[k][0] += other.bins[k][0]
       self.bins[k][1] += other.bins[k][1]
+    self.item_count += other.item_count
     
 
 class HistogramStat2D(HistogramStat):
@@ -620,6 +624,7 @@ class HistogramStat2D(HistogramStat):
       self.bins[k][0] += other.bins[k][0]
       self.bins[k][1] += other.bins[k][1]
       self.bins[k][2].merge(other.bins[k][2])
+    self.item_count += other.item_count
 
 
 class RankItems():
