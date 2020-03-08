@@ -123,7 +123,7 @@ FILE_AGE_HISTOGRAM = [  # File size histogram table to see how many files fall w
   15552000,             # Within 180 days
   31536000,             # Within 1 year (365 days)
   63072000,             # Within 2 years (365*2 days)
-  940608000,            # Within 3 years (365*3 days)
+  94608000,             # Within 3 years (365*3 days)
   126144000,            # Within 4 years (365*4 days)
   157680000,            # Within 5 years (365*5 days)
   315360000,            # Within 10 years (365*10 days)
@@ -538,7 +538,8 @@ class ClientProcessor(HydraClient):
       self.log.warn("DB not connected and consolidate_stats_db_called")
     # Flush all histogram caches
     for key in self.stats_histogram.keys():
-      self.stats_histogram[key].flush()
+      if hasattr(self.stats_histogram[key], 'flush'):
+        self.stats_histogram[key].flush()
     
   def handle_extended_server_cmd(self, svr_msg):
     cmd = svr_msg.get('cmd')

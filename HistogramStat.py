@@ -463,6 +463,8 @@ class HistogramStat():
       raise(TypeError('An object of type HistogramStat required'))
     if set(self.bin_config).difference(other.bin_config):
       raise(ValueError("The 2 histogram stats must have the same bin configuration"))
+    self.flush()
+    other.flush()
     for k in self.bin_config:
       self.bins[k] += other.bins[k]
     self.item_count += other.item_count
@@ -523,6 +525,8 @@ class HistogramStatCountAndValue(HistogramStat):
       raise(TypeError('An object of type HistogramStatCountAndValue required'))
     if set(self.bin_config).difference(other.bin_config):
       raise(ValueError("The 2 histogram stats must have the same bin configuration"))
+    other.flush()
+    self.flush()
     for k in self.bin_config:
       self.bins[k][0] += other.bins[k][0]
       self.bins[k][1] += other.bins[k][1]
@@ -620,6 +624,8 @@ class HistogramStat2D(HistogramStat):
       raise(TypeError('An object of type HistogramStat2D required'))
     if set(self.bin_config).difference(other.bin_config) or set(self.bin2_config).difference(other.bin2_config):
       raise(ValueError("The 2 histogram stats 2D must have the same bin configuration"))
+    self.flush()
+    other.flush()
     for k in self.bin_config + ['other']:
       self.bins[k][0] += other.bins[k][0]
       self.bins[k][1] += other.bins[k][1]
