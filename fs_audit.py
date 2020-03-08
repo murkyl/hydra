@@ -135,7 +135,7 @@ DEFAULT_CONFIG = {
   'cache_size': 10000,                      # Number of file data sets to store in memory before flushing
   'default_stat_array_len': 16,             # Default size of statistics arrays
   'extend_stat_array_incr': 16,             # Size of each extension of the stats array
-  'number_base': 10,
+  'number_base': 2,
 }
 
 DEFAULT_STATS_CONFIG = {
