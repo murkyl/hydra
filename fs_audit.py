@@ -142,10 +142,10 @@ DEFAULT_STATS_CONFIG = {
   'top_n_file_size': 100,
   'top_n_file_size_by_gid': 100,
   'top_n_file_size_by_uid': 100,
-  'file_size_histogram': FILE_SIZE_HISTOGRAM,
-  'file_atime_histogram': FILE_AGE_HISTOGRAM,
-  'file_ctime_histogram': FILE_AGE_HISTOGRAM,
-  'file_mtime_histogram': FILE_AGE_HISTOGRAM,
+  'file_size_histogram': FILE_SIZE_HISTOGRAM[:],
+  'file_atime_histogram': FILE_AGE_HISTOGRAM[:],
+  'file_ctime_histogram': FILE_AGE_HISTOGRAM[:],
+  'file_mtime_histogram': FILE_AGE_HISTOGRAM[:],
   'files_table': 'files',
   'stats_table': 'cstats',
 }
@@ -372,6 +372,8 @@ class WorkerHandler(HydraWorker):
         'atime': file_lstats.st_atime,
         'ctime': file_lstats.st_ctime,
         'mtime': file_lstats.st_mtime,
+        'perm': file_lstats.st_mode,
+        'links': file_lstats.st_nlink,
         'inode': file_lstats.st_ino,
       }
       self.cache[self.cache_idx] = file_data
@@ -382,7 +384,7 @@ class WorkerHandler(HydraWorker):
       # Update stats
       self.stats['file_size_total'] += fsize
       bs = self.args['block_size']
-      block_fsize = (fsize//bs + (not not fsize%bs))*bs   # A not not saves on if/else check. An number + True is the same as number + 1
+      block_fsize = (fsize//bs + (not not fsize%bs))*bs   # A not not saves on if/else check. A number + True is the same as number + 1
       self.stats['file_size_block_total'] += block_fsize
       incr_per_depth(self.stats['files_total_per_dir_depth'], self.ppath_len, 1)
       incr_per_depth(self.stats['file_size_total_per_dir_depth'], self.ppath_len, fsize)
@@ -456,6 +458,7 @@ class ClientProcessor(HydraClient):
   def init_stats_histogram(self, stat_state):
     # Histogram statistics
     stat_state['hist_file_count_by_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
+    stat_state['hist_file_count_by_block_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_atime'] = HistogramStat2D(self.args.get('file_atime_histogram'), self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_ctime'] = HistogramStat2D(self.args.get('file_ctime_histogram'), self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_mtime'] = HistogramStat2D(self.args.get('file_mtime_histogram'), self.args.get('file_size_histogram'))
@@ -465,6 +468,8 @@ class ClientProcessor(HydraClient):
     stat_state['top_n_file_size_by_gid'] = RankItemsByKey(self.args.get('top_n_file_size_by_gid'))
     stat_state['top_n_file_size_by_sid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
     stat_state['top_n_file_size_by_uid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
+    stat_state['total_by_sid'] = HashBinCountAndValue()
+    stat_state['total_by_uid'] = HashBinCountAndValue()
 
   def consolidate_stats(self):
     super(ClientProcessor, self).consolidate_stats()
@@ -495,6 +500,7 @@ class ClientProcessor(HydraClient):
     self.init_stats(self.stats)
     self.init_stats_histogram(self.stats_histogram)
     hist_file_count_by_size = self.stats_histogram['hist_file_count_by_size']
+    hist_file_count_by_block_size = self.stats_histogram['hist_file_count_by_block_size']
     hist_file_count_by_atime = self.stats_histogram['hist_file_count_by_atime']
     hist_file_count_by_ctime = self.stats_histogram['hist_file_count_by_ctime']
     hist_file_count_by_mtime = self.stats_histogram['hist_file_count_by_mtime']
@@ -504,6 +510,8 @@ class ClientProcessor(HydraClient):
     top_n_files_gid = self.stats_histogram['top_n_file_size_by_gid']
     top_n_files_sid = self.stats_histogram['top_n_file_size_by_sid']
     top_n_files_uid = self.stats_histogram['top_n_file_size_by_uid']
+    total_by_sid = self.stats_histogram['total_by_sid']
+    total_by_uid = self.stats_histogram['total_by_uid']
     now = self.args.get('reference_time', time.time())
     bs = self.args['block_size']
     
@@ -512,7 +520,9 @@ class ClientProcessor(HydraClient):
         self.stats = dict(record.get('stats'))
       for record in self.db[self.args['files_table']].find():
         file_size = record['filesize']
+        file_block_size = (file_size//bs + (not not file_size%bs))*bs   # A not not saves on if/else check. A number + True is the same as number + 1
         hist_file_count_by_size.insert_data(file_size)
+        hist_file_count_by_block_size.insert_data(file_block_size)
         hist_file_count_by_atime.insert_data(now - record['atime'], file_size)
         hist_file_count_by_ctime.insert_data(now - record['ctime'], file_size)
         hist_file_count_by_mtime.insert_data(now - record['mtime'], file_size)
@@ -522,8 +532,13 @@ class ClientProcessor(HydraClient):
         top_n_files_gid.insert_data(record.get('gid'), file_size, record)
         top_n_files_sid.insert_data(record.get('sid'), file_size, record)
         top_n_files_uid.insert_data(record.get('uid'), file_size, record)
+        total_by_sid.insert_data(record.get('sid'), file_size)
+        total_by_uid.insert_data(record.get('uid'), file_size)
     else:
       self.log.warn("DB not connected and consolidate_stats_db_called")
+    # Flush all histogram caches
+    for key in self.stats_histogram.keys():
+      self.stats_histogram[key].flush()
     
   def handle_extended_server_cmd(self, svr_msg):
     cmd = svr_msg.get('cmd')
@@ -584,6 +599,7 @@ class ServerProcessor(HydraServer):
   def init_stats_histogram(self, stat_state):
     # Histogram statistics
     stat_state['hist_file_count_by_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
+    stat_state['hist_file_count_by_block_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_atime'] = HistogramStat2D(self.args.get('file_atime_histogram'), self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_ctime'] = HistogramStat2D(self.args.get('file_ctime_histogram'), self.args.get('file_size_histogram'))
     stat_state['hist_file_count_by_mtime'] = HistogramStat2D(self.args.get('file_mtime_histogram'), self.args.get('file_size_histogram'))
@@ -593,6 +609,8 @@ class ServerProcessor(HydraServer):
     stat_state['top_n_file_size_by_gid'] = RankItemsByKey(self.args.get('top_n_file_size_by_gid'))
     stat_state['top_n_file_size_by_sid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
     stat_state['top_n_file_size_by_uid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
+    stat_state['total_by_sid'] = HashBinCountAndValue()
+    stat_state['total_by_uid'] = HashBinCountAndValue()
 
   def consolidate_stats(self):
     '''
@@ -670,6 +688,8 @@ class ServerProcessor(HydraServer):
         for k in set[c]['stats_histogram']:
           if k in self.stats_histogram:
             self.stats_histogram[k].merge(set[c]['stats_histogram'][k])
+          else:
+            self.log.error('Stats merge encountered a mismatch')
         
   def export_stats(self):
     if self.args.get('excel_filename'):
