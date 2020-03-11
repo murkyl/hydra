@@ -347,8 +347,9 @@ class HashBinCountAndValue():
     
   def insert_data(self, key, data):
     if not key in self.keys_cache:
-      self.bins[key] = [0, 0]
+      self.bins[key] = [1, data]
       self.keys_cache.append(key)
+      return
     self.bins[key][0] += 1
     self.bins[key][1] += data
     
@@ -382,7 +383,7 @@ class HashBinCountAndValue():
     self.item_count += other.item_count
     
 
-class HistogramStat():
+class HistogramStat(object):
   def __init__(self, bin_config, cache=10240):
     self.bin_config = bin_config[:]
     self.bin_length = len(self.bin_config)
@@ -397,6 +398,24 @@ class HistogramStat():
     for bin in self.bin_config + ['other']:
       self.bins[bin] = 0
 
+  def __contains__(self, key):
+    return (key in self.bin_config)
+
+  def __getitem__(self, key):
+    if not key in self.bin_config:
+      raise IndexError
+    return self.bins[key]
+    
+  def __iadd__(self, other):
+    if isinstance(other, HistogramStat):
+      self.merge(other)
+    else:
+      self.insert_data(other)
+    return self
+    
+  def __len__(self):
+    return self.item_count
+    
   def insert_data(self, data):
     # Use a cache array and in place modification to save on memory allocations
     self.cache_idx += 1
@@ -406,7 +425,7 @@ class HistogramStat():
       self.flush()
       
   def get_bin_config(self):
-    return self.bin_config[:]
+    return self.bin_config[:] + ['other']
 
   def get_histogram(self, flush=True):
     if flush:
@@ -421,9 +440,6 @@ class HistogramStat():
       hist_array.append(self.bins[k])
     hist_array.append(self.bins['other'])
     return hist_array
-    
-  def __len__(self):
-    return self.item_count
     
   def flush(self):
     if self.cache_idx < 0:
@@ -543,7 +559,7 @@ class HistogramStat2D(HistogramStat):
       self.bins[bin] = [0, 0, HistogramStatCountAndValue(self.bin2_config, cache=cache, norm=norm2)]
 
   def get_bin2_config(self):
-    return self.bin2_config[:]
+    return self.bin2_config[:] + ['other']
 
   def get_flattened_histogram(self, flush=True):
     if flush:

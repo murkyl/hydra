@@ -86,7 +86,7 @@ def get_y_axis_max(type, value):
     for i in [10000, 1000, 100, 10, 1]:
       range = value//i
       if range > 0:
-        max = math.ceil(value/i)*i
+        max = math.ceil(value/float(i))*i
         break
     if i == 1:
       if value < 1:
@@ -95,7 +95,7 @@ def get_y_axis_max(type, value):
     for i in [100000, 10000, 1000, 100, 10, 1]:
       range = value//i
       if range > 0:
-        max = math.ceil(value/i)*i
+        max = math.ceil(value/float(i))*i
         break
     if i == 1:
       max = 1
@@ -178,6 +178,157 @@ def write_column_headers(headers, document, worksheet, row=0, col=0, row_height=
     worksheet.set_column(col+i, col+i, headers[i].get('c', col_width), cell_format)
   worksheet.write_row(row, col, [x['t'] for x in headers])
 
+def helper_insert_top_n_files_per(data, document, bin_type, top_n_type, worksheet=None, cfg={}, row=0, col=0):
+  gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
+  gconf = lambda x, y='': data.get('config', {}).get(x, y)
+  headers = [
+      {'t': 'File size (bytes)',            'f': 'base10_gb'},
+      {'t': 'File path',          'c': 80,  'f': None},
+  ]
+  # Get the top N SIDS and then show the top files for that SID
+  rank_bins = gdetail(bin_type).get_bins()
+  rank_keys = list(rank_bins.keys())
+  rank_key_order = sorted(rank_keys, key=lambda x: rank_bins[x]['total'], reverse=True)
+  bins = gdetail(top_n_type).get_rank_list()
+  
+  # Create the special 2 row headers
+  start_col = col
+  for sid in rank_key_order:
+    worksheet.merge_range(row, start_col, row, start_col+1, sid, get_cell_format(document, 'header1'))
+    write_column_headers(headers, document, worksheet, row+1, start_col)
+    start_col += 3
+  row += 2
+  
+  start_row = row
+  for sid_key in rank_key_order:
+    user_list = bins[sid_key]
+    for i in range(len(user_list) - 1, -1, -1):
+      worksheet.write_row(
+        row, col,
+        [user_list[i][0], user_list[i][1]['filename'], ' '],
+      )
+      row += 1
+    col += 3
+    row = start_row
+
+def helper_insert_top_use_by(data, document, bin_type, bin_name, worksheet=None, cfg={}, row=0, col=0):
+  gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
+  gconf = lambda x, y='': data.get('config', {}).get(x, y)
+  headers = [
+      {'t': bin_name,             'c': 60,  'f': None},
+      {'t': 'File count',                   'f': 'align_right'},
+      {'t': 'File size (bytes)',            'f': 'base10_gb'},
+  ]
+  bins = gdetail(bin_type).get_bins()
+  keys = list(bins.keys())
+  key_order = sorted(keys, key=lambda x: bins[x]['total'], reverse=True)
+
+  write_column_headers(headers, document, worksheet, row, col)
+  row += 1
+  for key in key_order:
+    worksheet.write_row(
+      row, col,
+      [str(key), bins[key]['count'], bins[key]['total']]
+    )
+    row += 1
+    if row > cfg.get('top_n', float('inf')):
+      break
+
+def helper_insert_use_by_time(data, document, bin_type, bin_name, worksheet=None, cfg={}, row=0, col=0):
+  gbasic = lambda x, y='': data.get('basic', {}).get(x, y)
+  gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
+  gconf = lambda x, y='': data.get('config', {}).get(x, y)
+  nbase = gconf('number_base', 10)
+  headers = [
+      {'t': bin_name,             'c': 20,  'f': None},
+      {'t': 'File count',         'c': 15,  'f': 'align_right'},
+      {'t': 'Total size',         'c': 15,  'f': 'base10_gb'},
+      {'t': 'Total size (GB)',    'c': 15,  'f': '2_decimal'},
+      {'t': '% of total',         'c': 15,  'f': '2_decimal_pct'},
+  ]
+  div = float(1000**3)
+  total_file_size = float(gbasic('file_size_total'))
+  data = gdetail(bin_type)
+  time_bins = data.get_bin_config()   # Bins based on time
+  size_bins = data.get_bin2_config()  # Bins based on file sizes
+  size_hist = data.get_histogram()
+  max_size = 0
+  
+  last_bin = None
+  worksheet.set_column(col+3, col+len(time_bins), 5)
+  for bin in size_bins:
+    if bin != 'other':
+      title = '<= ' + humanize_number(bin, base=nbase)
+    else:
+      title = '> ' + humanize_number(last_bin, base=nbase)
+    headers.append({
+        't': title,
+        'c': 12,
+        'f': 'base10_gb',
+    })
+    last_bin = bin
+
+  write_column_headers(headers, document, worksheet, row, col)
+  row += 1
+  last_bin = None
+  for bin in time_bins:
+    if bin != 'other':
+      title = '<= ' + humanize_time(bin)
+    else:
+      title = '> ' + humanize_time(last_bin)
+    size_data = size_hist[bin][2].get_histogram()
+    size_keys = size_hist[bin][2].get_bin_config()
+    file_size = size_hist[bin][1]
+    worksheet.write_row(
+      row, col,
+      [
+        title,
+        size_hist[bin][0],
+        file_size,
+        file_size/div,
+        file_size/total_file_size
+      ] + [
+        size_data[x][1] for x in size_keys
+      ],
+    )
+    if file_size > max_size:
+      max_size = file_size
+    row += 1
+    last_bin = bin
+
+  chartsheet = document.add_chartsheet('%s chart'%worksheet.get_name())
+  data_label_format = CELL_FORMAT_STRINGS['2_decimal']['num_format']
+  size_max = get_y_axis_max('file_size', max_size/div)
+  chart = document.add_chart({'type': 'column'})
+  chart.set_legend({'position': 'bottom'})
+  chart.add_series({
+      'name': 'Capacity (GB)',
+      'categories': [worksheet.get_name(), 1, col, row, col],
+      'values': [worksheet.get_name(), 1, col+3, row, col+3],
+      'data_labels': {'value': True, 'num_format': data_label_format},
+  })
+  chart.set_y_axis({
+      'name': 'Capacity (GB)',
+      'min': 0,
+      'max': size_max,
+  })
+  chart2 = document.add_chart({'type': 'line'})
+  chart2.add_series({
+      'name': '% of total capacity',
+      'categories': [worksheet.get_name(), 1, col, row, col],
+      'values': [worksheet.get_name(), 1, col+4, row, col+4],
+      'marker': {'type': 'diamond'},
+      'y2_axis': True,
+  })
+  chart2.set_y2_axis({
+      'name': '% of total capacity',
+      'min': 0,
+      'max': 1,
+      'num_format': CELL_FORMAT_STRINGS['0_decimal_pct']['num_format'],
+  })
+  chart.combine(chart2)
+  chartsheet.set_chart(chart)
+
 def insert_category_def(data, document, worksheet=None, cfg={}, row=0, col=0):
   headers = [{'t': humanize(x)} for x in HistogramStat.CATEGORIES.keys()]
 
@@ -186,6 +337,37 @@ def insert_category_def(data, document, worksheet=None, cfg={}, row=0, col=0):
   for key in HistogramStat.CATEGORIES.keys():
     worksheet.write_column(row, col, HistogramStat.CATEGORIES[key])
     col += 1
+
+def insert_directory_details(data, document, worksheet=None, cfg={}, row=0, col=0):
+  gbasic = lambda x, y='': data.get('basic', {}).get(x, y)
+  gconf = lambda x, y='': data.get('config', {}).get(x, y)
+  depth_range = gbasic('max_dir_depth') + 1
+  dataset = [
+    {'t': 'Directory details'},
+    {'l': 'Average directory depth',        'd': gbasic('average_directory_depth'), 'f': '2_decimal'},
+    {'l': 'Average directory width',        'd': gbasic('average_directory_width'), 'f': '2_decimal'},
+    {'l': 'Deepest directory level',        'd': gbasic('max_dir_depth')},
+    {'l': 'Widest directory',               'd': gbasic('max_dir_width')},
+    {'t': 'Directory details at each directory depth'},
+    {'l': '',                               'd': [x for x in range(gbasic('max_dir_depth') + 1)],                 'f': 'align_right'},
+    {'l': 'Average file size @ depth',      'd': gbasic('average_file_size_per_dir_depth')[0:depth_range],        'f': 'base10_gb'},
+    {'l': 'Average file block size @ depth','d': gbasic('average_file_size_block_per_dir_depth')[0:depth_range],  'f': 'base10_gb'},
+    {'l': 'Average files @ depth',          'd': gbasic('average_files_per_dir_depth')[0:depth_range],            'f': '2_decimal'},
+  ]
+  
+  worksheet.set_column(col, col, 30)
+  worksheet.set_column(col+1, col+depth_range, 14, get_cell_format(document, 'align_right'))
+  for x in dataset:
+    if x.get('t'):
+      worksheet.merge_range(row, col, row, col+1, x['t'], get_cell_format(document, 'header1'))
+    else:
+      data = x.get('d', '')
+      worksheet.write(row, col, x.get('l', ''))
+      if isinstance(data, list):
+        worksheet.write_row(row, col + 1, data, get_cell_format(document, x.get('f')))
+      else:
+        worksheet.write(row, col + 1, data, get_cell_format(document, x.get('f')))
+    row += 1
 
 def insert_file_age_distribution(data, document, worksheet=None, cfg={}, row=0, col=0):
   gbasic = lambda x, y='': data.get('basic', {}).get(x, y)
@@ -214,18 +396,23 @@ def insert_file_age_distribution(data, document, worksheet=None, cfg={}, row=0, 
 
   write_column_headers(headers, document, worksheet, row, col)
   row += 1
-  
+  last_bin = None
   for bin in bins:
+    if bin != 'other':
+      title = '<= ' + humanize_time(bin)
+    else:
+      title = '> ' + humanize_time(last_bin)
     worksheet.write_row(
       row,
       col,
       [
-        humanize_time(bin),
+        title,
         ahist[bin][0], ahist[bin][0]/total_files,
         chist[bin][0], chist[bin][0]/total_files,
         mhist[bin][0], mhist[bin][0]/total_files,
       ]
     )
+    last_bin = bin
     row += 1
     
   chartsheet = document.add_chartsheet('%s chart'%worksheet.get_name())
@@ -260,17 +447,17 @@ def insert_file_categories_by_size(data, document, worksheet=None, cfg={}, row=0
   gbasic = lambda x, y='': data.get('basic', {}).get(x, y)
   gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
   gconf = lambda x, y='': data.get('config', {}).get(x, y)
-  nbase = gconf('number_base', 2)
-  size_str = 'base10_gb' if nbase == 10 else 'base2_gb'
   headers = [
       {'t': 'File category',                  'f': 'align_right'},
       {'t': 'File count',                     'f': 'align_right'},
-      {'t': 'File size',            'c': 30,  'f': size_str},
+      {'t': 'File size',            'c': 30,  'f': 'base10_gb'},
       {'t': '% of total capacity',  'c': 30,  'f': '2_decimal_pct'},
   ]
   bins = data['detailed']['category'].get_bins()
   keys = list(bins.keys())
   key_order = sorted(keys, key=lambda x: bins[x]['total'], reverse=True)
+  total_capacity = float(gbasic('file_size_block_total'))
+  max_row = cfg.get('top_n', float('inf'))
 
   write_column_headers(headers, document, worksheet, row, col)
   row += 1
@@ -278,26 +465,26 @@ def insert_file_categories_by_size(data, document, worksheet=None, cfg={}, row=0
     worksheet.write_row(
       row,
       col,
-      [humanize(key), bins[key]['count'], bins[key]['total'], bins[key]['total']/gbasic('file_size_total')])
+      [humanize(key), bins[key]['count'], bins[key]['total'], bins[key]['total']/total_capacity])
     row += 1
-    if row > cfg.get('top_n', float('inf')):
+    if row > max_row:
       break
 
 def insert_file_extensions_by_size(data, document, worksheet=None, cfg={}, row=0, col=0):
   gbasic = lambda x, y='': data.get('basic', {}).get(x, y)
   gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
   gconf = lambda x, y='': data.get('config', {}).get(x, y)
-  nbase = gconf('number_base', 2)
-  size_str = 'base10_gb' if nbase == 10 else 'base2_gb'
   headers = [
       {'t': 'File extension',                 'f': 'align_right'},
       {'t': 'File count',                     'f': 'align_right'},
-      {'t': 'File size',            'c': 30,  'f': size_str},
+      {'t': 'File size',            'c': 30,  'f': 'base10_gb'},
       {'t': '% of total capacity',  'c': 30,  'f': '2_decimal_pct'},
   ]
   bins = data['detailed']['extensions'].get_bins()
   keys = list(bins.keys())
   key_order = sorted(keys, key=lambda x: bins[x]['total'], reverse=True)
+  total_capacity = float(gbasic('file_size_block_total'))
+  max_row = cfg.get('top_n', float('inf'))
 
   write_column_headers(headers, document, worksheet, row, col)
   row += 1
@@ -305,31 +492,29 @@ def insert_file_extensions_by_size(data, document, worksheet=None, cfg={}, row=0
     worksheet.write_row(
       row,
       col,
-      [key or '<No extension>', bins[key]['count'], bins[key]['total'], bins[key]['total']/gbasic('file_size_total')]
+      [key or '<No extension>', bins[key]['count'], bins[key]['total'], bins[key]['total']/total_capacity]
     )
     row += 1
-    if row > cfg.get('top_n', float('inf')):
+    if row > max_row:
       break
 
 def insert_file_sizes_histogram(data, document, worksheet=None, cfg={}, row=0, col=0):
   gbasic = lambda x, y='': data.get('basic', {}).get(x, y)
   gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
   gconf = lambda x, y='': data.get('config', {}).get(x, y)
-  nbase = gconf('number_base', 2)
-  gb_size_str = 'GB' if nbase == 10 else 'GiB'
-  size_str = 'base10_gb' if nbase == 10 else 'base2_gb'
+  nbase = gconf('number_base', 10)
   headers = [
-      {'t': 'File size bins',                                       'f': 'lt_'+size_str},
-      {'t': 'File count',                                           'f': 'group_num1'},
-      {'t': 'File size (bytes)',                                    'f': size_str},
-      {'t': '% of total capacity',                        'c': 30,  'f': '2_decimal_pct'},
-      {'t': 'File size (%s)'%gb_size_str,                           'f': '4_decimal'},
-      {'t': 'File count\nBlock boundary',                           'f': 'group_num1'},
-      {'t': 'File size (bytes)\nBlock boundary',                    'f': size_str},
-      {'t': '% of total capacity\nBlock boundary',        'c': 30,  'f': '2_decimal_pct'},
-      {'t': 'File size (%s)\nBlock boundary'%gb_size_str,           'f': '4_decimal'},
+      {'t': 'File size bins',                                   'f': 'align_right'},
+      {'t': 'File count',                                       'f': 'group_num1'},
+      {'t': 'File size (bytes)',                                'f': 'base10_gb'},
+      {'t': '% of total capacity',                    'c': 30,  'f': '2_decimal_pct'},
+      {'t': 'File size (GB)',                                   'f': '4_decimal'},
+      {'t': 'File count\nBlock boundary',                       'f': 'group_num1'},
+      {'t': 'File size (bytes)\nBlock boundary',                'f': 'base10_gb'},
+      {'t': '% of total capacity\nBlock boundary',    'c': 30,  'f': '2_decimal_pct'},
+      {'t': 'File size (GB)\nBlock boundary',                   'f': '4_decimal'},
   ]
-  div = 1000**3 if nbase == 10 else 1024**3
+  div = float(1000**3)
   total_file_size = gbasic('file_size_total')
   total_file_size_block = gbasic('file_size_block_total')
   max_size = 0
@@ -349,14 +534,14 @@ def insert_file_sizes_histogram(data, document, worksheet=None, cfg={}, row=0, c
   hist2 = file_block_size_hist.get_histogram()
   
   last_key = None
-  for key in hist1.keys():
+  sorted_keys = sorted(list(hist1.keys()), key=lambda x: float('inf') if x == 'other' else x)
+  for key in sorted_keys:
     bin = hist1[key]
     bin2 = hist2[key]
     if key != 'other':
-      title = key
+      title = '<= ' + humanize_number(key, base=nbase)
     else:
-      title = last_key
-      get_cell_format(document, 'lt_'+size_str)
+      title = '> ' + humanize_number(last_key, base=nbase)
     file_size = bin[1]/div
     file_size_block = bin2[1]/div
     if file_size > max_size:
@@ -378,7 +563,7 @@ def insert_file_sizes_histogram(data, document, worksheet=None, cfg={}, row=0, c
     row += 1
     last_key = key
   # Re-write last bin title
-  worksheet.write(row-1, col, title, get_cell_format(document, 'gt_'+size_str))
+  worksheet.write(row-1, col, title, get_cell_format(document, 'gt_base10_gb'))
   
   worksheet.write_formula(row+1, col+1, '=sum(B2:B%d)'%row, None, gbasic('total_files'))
   worksheet.write_formula(row+1, col+2, '=sum(C2:C%d)'%row, None, total_file_size)
@@ -399,20 +584,20 @@ def insert_file_sizes_histogram(data, document, worksheet=None, cfg={}, row=0, c
   chart = document.add_chart({'type': 'column'})
   chart.set_legend({'position': 'bottom'})
   chart.add_series({
-      'name': 'Used capacity (%s)'%gb_size_str,
+      'name': 'Used capacity (GB)',
       'categories': [worksheet.get_name(), 1, col, row, col],
       'values': [worksheet.get_name(), 1, col+4, row, col+4],
       'data_labels': {'value': True, 'num_format': data_label_format},
   })
   # TODO: Uncomment to merge block based counts
   #chart.add_series({
-  #    'name': 'Used capacity (%s) (block)'%gb_size_str,
+  #    'name': 'Used capacity (GB) (block)',
   #    'categories': [worksheet.get_name(), 1, col, row, col],
   #    'values': [worksheet.get_name(), 1, col+8, row, col+8],
   #    'data_labels': {'value': False, 'num_format': data_label_format},
   #})
   chart.set_y_axis({
-      'name': 'Capacity (%s)'%gb_size_str,
+      'name': 'Capacity (GB)',
       'min': 0,
       'max': size_max,
   })
@@ -443,26 +628,24 @@ def insert_file_sizes_histogram(data, document, worksheet=None, cfg={}, row=0, c
 def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
   gbasic = lambda x, y='': data.get('basic', {}).get(x, y)
   gconf = lambda x, y='': data.get('config', {}).get(x, y)
-  nbase = gconf('number_base', 2)
-  size_str = 'base10_gb' if nbase == 10 else 'base2_gb'
   dataset = [
     {'t': 'File system summary'},
     {'l': 'Total files scanned',            'd': gbasic('processed_files')},
     {'l': 'Total directories scanned',      'd': gbasic('processed_dirs')},
     {'l': 'Total non leaf directories',     'd': gbasic('parent_dirs_total')},
-    {'l': 'Total bytes processed',          'd': gbasic('file_size_total'),         'f': size_str},
-    {'l': 'Total bytes processed (block)',  'd': gbasic('file_size_block_total'),   'f': size_str},
+    {'l': 'Total bytes processed',          'd': gbasic('file_size_total'),         'f': 'base10_gb'},
+    {'l': 'Total bytes processed (block)',  'd': gbasic('file_size_block_total'),   'f': 'base10_gb'},
     {'l': 'Symlink files',                  'd': gbasic('symlink_files')},
     {'l': 'Skipped files',                  'd': gbasic('skipped_files')},
     {'l': 'Filtered files',                 'd': gbasic('filtered_files')},
     {'l': 'Filtered directories',           'd': gbasic('filtered_dirs')},
     {'l': 'Max files in a directory',       'd': gbasic('max_files_in_dir')},
-    {'l': 'Deepest directory level',        'd': gbasic('max_dir_depth')},
-    {'l': 'Widest directory level',         'd': gbasic('max_dir_width')},
-    {'l': 'Average file size',              'd': gbasic('average_file_size'),       'f': size_str},
-    {'l': 'Average file size (block)',      'd': gbasic('average_file_size_block'), 'f': size_str},
+    {'l': 'Average file size',              'd': gbasic('average_file_size'),       'f': 'base10_gb'},
+    {'l': 'Average file size (block)',      'd': gbasic('average_file_size_block'), 'f': 'base10_gb'},
     {'l': 'Average directory depth',        'd': gbasic('average_directory_depth'), 'f': '2_decimal'},
     {'l': 'Average directory width',        'd': gbasic('average_directory_width'), 'f': '2_decimal'},
+    {'l': 'Deepest directory level',        'd': gbasic('max_dir_depth')},
+    {'l': 'Widest directory',               'd': gbasic('max_dir_width')},
     {'l': 'Block size (bytes)',             'd': gconf('block_size')},
   ]
   
@@ -480,10 +663,8 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
 def insert_top_n_files(data, document, worksheet=None, cfg={}, row=0, col=0):
   gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
   gconf = lambda x, y='': data.get('config', {}).get(x, y)
-  nbase = gconf('number_base', 2)
-  size_str = 'base10_gb' if nbase == 10 else 'base2_gb'
   headers = [
-      {'t': 'File size (bytes)',            'f': size_str},
+      {'t': 'File size (bytes)',            'f': 'base10_gb'},
       {'t': 'File path',          'c': 80,  'f': None},
   ]
   rlist = gdetail('top_n_file_size').get_rank_list()
@@ -497,111 +678,112 @@ def insert_top_n_files(data, document, worksheet=None, cfg={}, row=0, col=0):
     )
     row += 1
 
+def insert_top_n_files_per_gid(data, document, worksheet=None, cfg={}, row=0, col=0):
+  helper_insert_top_n_files_per(
+    data,
+    document,
+    bin_type='total_by_gid',
+    top_n_type='top_n_file_size_by_gid',
+    worksheet=worksheet,
+    cfg=cfg, row=row, col=col,
+  )
+
 def insert_top_n_files_per_sid(data, document, worksheet=None, cfg={}, row=0, col=0):
-  gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
-  gconf = lambda x, y='': data.get('config', {}).get(x, y)
-  nbase = gconf('number_base', 2)
-  size_str = 'base10_gb' if nbase == 10 else 'base2_gb'
-  headers = [
-      {'t': 'File size (bytes)',            'f': size_str},
-      {'t': 'File path',          'c': 80,  'f': None},
-  ]
-  # Get the top N SIDS and then show the top files for that SID
-  sid_bins = gdetail('total_by_sid').get_bins()
-  sid_keys = list(sid_bins.keys())
-  sid_key_order = sorted(sid_keys, key=lambda x: sid_bins[x]['total'], reverse=True)
-  bins = gdetail('top_n_file_size_by_sid').get_rank_list()
-  
-  # Create the special 2 row headers
-  start_col = col
-  for sid in sid_key_order:
-    worksheet.merge_range(row, start_col, row, start_col+1, sid, get_cell_format(document, 'header1'))
-    write_column_headers(headers, document, worksheet, row+1, start_col)
-    start_col += 3
-  row += 2
-  
-  start_row = row
-  for sid_key in sid_key_order:
-    user_list = bins[sid_key]
-    for i in range(len(user_list) - 1, -1, -1):
-      worksheet.write_row(
-        row, col,
-        [user_list[i][0], user_list[i][1]['filename'], ' '],
-      )
-      row += 1
-    col += 3
-    row = start_row
+  helper_insert_top_n_files_per(
+    data,
+    document,
+    bin_type='total_by_sid',
+    top_n_type='top_n_file_size_by_sid',
+    worksheet=worksheet,
+    cfg=cfg, row=row, col=col,
+    )
+
+def insert_top_n_files_per_uid(data, document, worksheet=None, cfg={}, row=0, col=0):
+  helper_insert_top_n_files_per(
+    data,
+    document,
+    bin_type='total_by_uid',
+    top_n_type='top_n_file_size_by_uid',
+    worksheet=worksheet,
+    cfg=cfg, row=row, col=col,
+  )
 
 def insert_top_use_by_sid(data, document, worksheet=None, cfg={}, row=0, col=0):
-  gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
-  gconf = lambda x, y='': data.get('config', {}).get(x, y)
-  nbase = gconf('number_base', 2)
-  size_str = 'base10_gb' if nbase == 10 else 'base2_gb'
-  headers = [
-      {'t': 'User (SID)',         'c': 60,  'f': None},
-      {'t': 'File count',                   'f': 'align_right'},
-      {'t': 'File size (bytes)',            'f': size_str},
-  ]
-  bins = gdetail('total_by_sid').get_bins()
-  keys = list(bins.keys())
-  key_order = sorted(keys, key=lambda x: bins[x]['total'], reverse=True)
-
-  write_column_headers(headers, document, worksheet, row, col)
-  row += 1
-  for key in key_order:
-    worksheet.write_row(
-      row, col,
-      [key, bins[key]['count'], bins[key]['total']]
-    )
-    row += 1
-    if row > cfg.get('top_n', float('inf')):
-      break
+  helper_insert_top_use_by(
+    data,
+    document,
+    bin_type='total_by_sid',
+    bin_name='User (SID)',
+    worksheet=worksheet,
+    cfg=cfg, row=row, col=col
+  )
 
 def insert_top_use_by_uid(data, document, worksheet=None, cfg={}, row=0, col=0):
-  gdetail = lambda x, y='': data.get('detailed', {}).get(x, y)
-  gconf = lambda x, y='': data.get('config', {}).get(x, y)
-  nbase = gconf('number_base', 2)
-  size_str = 'base10_gb' if nbase == 10 else 'base2_gb'
-  headers = [
-      {'t': 'User (UID)',         'c': 30,  'f': None},
-      {'t': 'File count',                   'f': 'align_right'},
-      {'t': 'File size (bytes)',            'f': size_str},
-  ]
-  bins = gdetail('total_by_uid').get_bins()
-  keys = list(bins.keys())
-  key_order = sorted(keys, key=lambda x: bins[x]['total'], reverse=True)
+  helper_insert_top_use_by(
+    data,
+    document,
+    bin_type='total_by_uid',
+    bin_name='User (UID)',
+    worksheet=worksheet,
+    cfg=cfg, row=row, col=col
+  )
 
-  write_column_headers(headers, document, worksheet, row, col)
-  row += 1
-  for key in key_order:
-    worksheet.write_row(
-      row, col,
-      [str(key), bins[key]['count'], bins[key]['total']]
-    )
-    row += 1
-    if row > cfg.get('top_n', float('inf')):
-      break
+def insert_use_by_atime(data, document, worksheet=None, cfg={}, row=0, col=0):
+  helper_insert_use_by_time(
+    data,
+    document,
+    bin_type='hist_file_count_by_atime',
+    bin_name='Files accessed',
+    worksheet=worksheet,
+    cfg=cfg, row=row, col=col
+  )
+
+def insert_use_by_ctime(data, document, worksheet=None, cfg={}, row=0, col=0):
+  helper_insert_use_by_time(
+    data,
+    document,
+    bin_type='hist_file_count_by_atime',
+    bin_name='Files created/changed',
+    worksheet=worksheet,
+    cfg=cfg, row=row, col=col
+  )
+
+def insert_use_by_mtime(data, document, worksheet=None, cfg={}, row=0, col=0):
+  helper_insert_use_by_time(
+    data,
+    document,
+    bin_type='hist_file_count_by_atime',
+    bin_name='Files modified',
+    worksheet=worksheet,
+    cfg=cfg, row=row, col=col
+  )
 
 def export_xlsx(data, file):
   modules = [
-    [insert_summary, 'Summary'],
-    [insert_file_sizes_histogram, 'File sizes'],
-    [insert_file_age_distribution, 'File ages'],
-    [insert_file_extensions_by_size, 'File extensions'],
-    [insert_file_categories_by_size, 'File categories'],
-    [insert_top_n_files, 'Top N files'],
-    [insert_top_n_files_per_sid, 'Top N files per SID'],
-    [insert_top_use_by_sid, 'Use by SID'],
-    [insert_top_use_by_uid, 'Use by UID'],
-    [insert_category_def, 'Category definition'],
+    ['Summary',               insert_summary],
+    ['Directory details',     insert_directory_details],
+    ['File sizes',            insert_file_sizes_histogram],
+    ['File ages',             insert_file_age_distribution],
+    ['Use by ctime',          insert_use_by_ctime],
+    ['Use by atime',          insert_use_by_atime],
+    ['Use by mtime',          insert_use_by_mtime],
+    ['File extensions',       insert_file_extensions_by_size],
+    ['File categories',       insert_file_categories_by_size],
+    ['Top N files',           insert_top_n_files],
+    ['Top N files per SID',   insert_top_n_files_per_sid],
+    ['Top N files per UID',   insert_top_n_files_per_uid],
+    #['Top N files per GID',   insert_top_n_files_per_gid],
+    ['Use by SID',            insert_top_use_by_sid],
+    ['Use by UID',            insert_top_use_by_uid],
+    ['Category definition',   insert_category_def],
   ]
 
   workbook = xlsxwriter.Workbook(file)
   cfg = dict(DEFAULT_CFG)
   for mod in modules:
     try:
-      worksheet = workbook.add_worksheet(mod[1] if mod[1] else None)
-      mod[0](data, workbook, worksheet, cfg)
+      worksheet = workbook.add_worksheet(mod[0] if mod[0] else None)
+      mod[1](data, workbook, worksheet, cfg)
     except Exception as e:
       logging.getLogger().error('Unable to fully output worksheet: %s\n%s'%(mod[1], traceback.format_exc()))
   try:

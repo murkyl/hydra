@@ -116,6 +116,7 @@ FILE_AGE_HISTOGRAM = [  # File size histogram table to see how many files fall w
   60,                   # Within last minute
   3600,                 # Within 1 hour
   86400,                # Within 1 day
+  172800,               # Within 2 days
   604800,               # Within 1 week
   2592000,              # Within 30 days
   5184000,              # Within 60 days
@@ -311,6 +312,8 @@ class WorkerHandler(HydraWorker):
         )
       else:
         #TODO: Add in memory stats handling here
+        # Copy the histogram code from the client implementation and then send
+        # the data to the client for collation
         pass
       self.cache_idx = 0
       
@@ -470,6 +473,7 @@ class ClientProcessor(HydraClient):
     stat_state['top_n_file_size_by_uid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
     stat_state['total_by_sid'] = HashBinCountAndValue()
     stat_state['total_by_uid'] = HashBinCountAndValue()
+    stat_state['total_by_gid'] = HashBinCountAndValue()
 
   def consolidate_stats(self):
     super(ClientProcessor, self).consolidate_stats()
@@ -512,6 +516,7 @@ class ClientProcessor(HydraClient):
     top_n_files_uid = self.stats_histogram['top_n_file_size_by_uid']
     total_by_sid = self.stats_histogram['total_by_sid']
     total_by_uid = self.stats_histogram['total_by_uid']
+    total_by_gid = self.stats_histogram['total_by_gid']
     now = self.args.get('reference_time', time.time())
     bs = self.args['block_size']
     
@@ -534,6 +539,7 @@ class ClientProcessor(HydraClient):
         top_n_files_uid.insert_data(record.get('uid'), file_size, record)
         total_by_sid.insert_data(record.get('sid'), file_size)
         total_by_uid.insert_data(record.get('uid'), file_size)
+        total_by_gid.insert_data(record.get('gid'), file_size)
     else:
       self.log.warn("DB not connected and consolidate_stats_db_called")
     # Flush all histogram caches
@@ -612,6 +618,7 @@ class ServerProcessor(HydraServer):
     stat_state['top_n_file_size_by_uid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
     stat_state['total_by_sid'] = HashBinCountAndValue()
     stat_state['total_by_uid'] = HashBinCountAndValue()
+    stat_state['total_by_gid'] = HashBinCountAndValue()
 
   def consolidate_stats(self):
     '''
@@ -951,9 +958,15 @@ def main():
   log = logging.getLogger('')
   audit = logging.getLogger('audit')
   if isinstance(log.handlers[0], logging.handlers.RotatingFileHandler):
-    log.handlers[0].doRollover()
+    try:
+      log.handlers[0].doRollover()
+    except:
+      pass
   if options.audit:
-    audit.handlers[0].doRollover()
+    try:
+      audit.handlers[0].doRollover()
+    except:
+      pass
     
   if options.server:
     log.info("Starting up the server")
