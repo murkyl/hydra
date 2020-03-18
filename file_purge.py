@@ -38,7 +38,7 @@ of --date 30 means that any file before 1969-06-20 at 08:00:05 would be deleted.
 -----
 python %prog -s -p /some/path --date 30 --mtime
 
-In this instance, without the --purge option, files will actually be deleted. \
+In this instance, without the --purge option, files will not be deleted. \
 This mode is like a simulation of what files would be deleted.
 -----
 python %prog -s -p /some/path -p /some/other_path --date 365 --mtime --log server.log
@@ -94,7 +94,6 @@ try:
   dir(WindowsError)
 except:
   class WindowsError(OSError): pass
-# Try to import Windows libraries to get SID
 # EXAMPLE:
 # Add any additional imports
 import json
