@@ -185,11 +185,14 @@ def helper_insert_top_n_files_per(data, document, bin_type, top_n_type, workshee
       {'t': 'File size (bytes)',            'f': 'base10_gb'},
       {'t': 'File path',          'c': 80,  'f': None},
   ]
-  # Get the top N SIDS and then show the top files for that SID
+  # Get the top N and then show the top files for that bin_type
   rank_bins = gdetail(bin_type).get_bins()
   rank_keys = list(rank_bins.keys())
   rank_key_order = sorted(rank_keys, key=lambda x: rank_bins[x]['total'], reverse=True)
   bins = gdetail(top_n_type).get_rank_list()
+  if len(bins) == 0:
+    worksheet.write(row, col, 'No data')
+    return
   
   # Create the special 2 row headers
   start_col = col
@@ -200,8 +203,8 @@ def helper_insert_top_n_files_per(data, document, bin_type, top_n_type, workshee
   row += 2
   
   start_row = row
-  for sid_key in rank_key_order:
-    user_list = bins[sid_key]
+  for key in rank_key_order:
+    user_list = bins[key]
     for i in range(len(user_list) - 1, -1, -1):
       worksheet.write_row(
         row, col,
@@ -254,6 +257,10 @@ def helper_insert_use_by_time(data, document, bin_type, bin_name, worksheet=None
   size_hist = data.get_histogram()
   max_size = 0
   
+  if total_file_size == 0:
+    # Handle case of 0 space used and avoid divide by 0
+    total_file_size = 1
+
   last_bin = None
   worksheet.set_column(col+3, col+len(time_bins), 5)
   for bin in size_bins:
@@ -382,17 +389,18 @@ def insert_file_age_distribution(data, document, worksheet=None, cfg={}, row=0, 
       {'t': 'Last data modified',                   'c': 25,  'f': 'align_right'},
       {'t': 'Last data modified\n% of total',       'c': 25,  'f': '2_decimal_pct'},
   ]
-  total_files = gbasic('processed_files')
+  total_files = float(gbasic('processed_files'))
   adata = gdetail('hist_file_count_by_atime')
   cdata = gdetail('hist_file_count_by_ctime')
   mdata = gdetail('hist_file_count_by_mtime')
-  if not adata or not cdata or not mdata:
-    logging.getLogger().error('One of the file age histograms is empty. Both should have data.')
-    return
   bins = adata.get_bin_config()
   ahist = adata.get_histogram()
   chist = cdata.get_histogram()
   mhist = mdata.get_histogram()
+
+  if total_files == 0:
+    # Handle case of 0 space used and avoid divide by 0
+    total_files = 1
 
   write_column_headers(headers, document, worksheet, row, col)
   row += 1
@@ -456,8 +464,12 @@ def insert_file_categories_by_size(data, document, worksheet=None, cfg={}, row=0
   bins = data['detailed']['category'].get_bins()
   keys = list(bins.keys())
   key_order = sorted(keys, key=lambda x: bins[x]['total'], reverse=True)
-  total_capacity = float(gbasic('file_size_block_total'))
+  total_file_size = float(gbasic('file_size_total'))
   max_row = cfg.get('top_n', float('inf'))
+
+  if total_file_size == 0:
+    # Handle case of 0 space used and avoid divide by 0
+    total_file_size = 1
 
   write_column_headers(headers, document, worksheet, row, col)
   row += 1
@@ -465,7 +477,7 @@ def insert_file_categories_by_size(data, document, worksheet=None, cfg={}, row=0
     worksheet.write_row(
       row,
       col,
-      [humanize(key), bins[key]['count'], bins[key]['total'], bins[key]['total']/total_capacity])
+      [humanize(key), bins[key]['count'], bins[key]['total'], bins[key]['total']/total_file_size])
     row += 1
     if row > max_row:
       break
@@ -483,8 +495,12 @@ def insert_file_extensions_by_size(data, document, worksheet=None, cfg={}, row=0
   bins = data['detailed']['extensions'].get_bins()
   keys = list(bins.keys())
   key_order = sorted(keys, key=lambda x: bins[x]['total'], reverse=True)
-  total_capacity = float(gbasic('file_size_block_total'))
+  total_file_size = float(gbasic('file_size_block_total'))
   max_row = cfg.get('top_n', float('inf'))
+
+  if total_file_size == 0:
+    # Handle case of 0 space used and avoid divide by 0
+    total_file_size = 1
 
   write_column_headers(headers, document, worksheet, row, col)
   row += 1
@@ -492,7 +508,7 @@ def insert_file_extensions_by_size(data, document, worksheet=None, cfg={}, row=0
     worksheet.write_row(
       row,
       col,
-      [key or '<No extension>', bins[key]['count'], bins[key]['total'], bins[key]['total']/total_capacity]
+      [key or '<No extension>', bins[key]['count'], bins[key]['total'], bins[key]['total']/total_file_size]
     )
     row += 1
     if row > max_row:
@@ -515,26 +531,30 @@ def insert_file_sizes_histogram(data, document, worksheet=None, cfg={}, row=0, c
       {'t': 'File size (GB)\nBlock boundary',                   'f': '4_decimal'},
   ]
   div = float(1000**3)
-  total_file_size = gbasic('file_size_total')
-  total_file_size_block = gbasic('file_size_block_total')
+  total_file_size = float(gbasic('file_size_total'))
+  total_file_size_block = float(gbasic('file_size_block_total'))
   max_size = 0
   max_size_block = 0
   max_file_count = 0
   max_file_count_block = 0
   
-
   write_column_headers(headers, document, worksheet, row, col)
   row += 1
   file_size_hist = gdetail('hist_file_count_by_size')
-  file_block_size_hist = gdetail('hist_file_count_by_block_size')
-  if not file_size_hist or not file_block_size_hist:
-    logging.getLogger().error('One of the file size histograms is empty. Both should have data.')
-    return
+  file_size_block_hist = gdetail('hist_file_count_by_block_size')
+  bin_desc = file_size_hist.get_bin_config()
   hist1 = file_size_hist.get_histogram()
-  hist2 = file_block_size_hist.get_histogram()
+  hist2 = file_size_block_hist.get_histogram()
+  
+  if total_file_size == 0:
+    # Handle case of 0 space used and avoid divide by 0
+    total_file_size = 1
+  if total_file_size_block == 0:
+    # Handle case of 0 space used and avoid divide by 0
+    total_file_size_block = 1
   
   last_key = None
-  sorted_keys = sorted(list(hist1.keys()), key=lambda x: float('inf') if x == 'other' else x)
+  sorted_keys = sorted(bin_desc, key=lambda x: float('inf') if x == 'other' else x)
   for key in sorted_keys:
     bin = hist1[key]
     bin2 = hist2[key]
@@ -789,5 +809,4 @@ def export_xlsx(data, file):
   try:
     workbook.close()
   except Exception as e:
-    logging.getLogger().error('Unable to write XLSX file: %s'%file)
-    raise
+    logging.getLogger().critical('Unable to write XLSX file: %s'%file)

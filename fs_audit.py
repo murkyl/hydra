@@ -137,6 +137,9 @@ DEFAULT_CONFIG = {
   'default_stat_array_len': 16,             # Default size of statistics arrays
   'extend_stat_array_incr': 16,             # Size of each extension of the stats array
   'number_base': 2,
+  'db_containers': 100,
+  'files_table': 'files',
+  'cstats_table': 'cstats',
 }
 
 DEFAULT_STATS_CONFIG = {
@@ -147,8 +150,6 @@ DEFAULT_STATS_CONFIG = {
   'file_atime_histogram': FILE_AGE_HISTOGRAM[:],
   'file_ctime_histogram': FILE_AGE_HISTOGRAM[:],
   'file_mtime_histogram': FILE_AGE_HISTOGRAM[:],
-  'files_table': 'files',
-  'stats_table': 'cstats',
 }
 
 # EXAMPLE:
@@ -242,6 +243,23 @@ def path_depth(path):
   ppath = pathlib.PurePath(path)
   return len(ppath.parents)
 
+def init_stats_histogram(stat_state, hist_args):
+  # Histogram statistics
+  stat_state['hist_file_count_by_size'] = HistogramStatCountAndValue(hist_args.get('file_size_histogram'))
+  stat_state['hist_file_count_by_block_size'] = HistogramStatCountAndValue(hist_args.get('file_size_histogram'))
+  stat_state['hist_file_count_by_atime'] = HistogramStat2D(hist_args.get('file_atime_histogram'), hist_args.get('file_size_histogram'))
+  stat_state['hist_file_count_by_ctime'] = HistogramStat2D(hist_args.get('file_ctime_histogram'), hist_args.get('file_size_histogram'))
+  stat_state['hist_file_count_by_mtime'] = HistogramStat2D(hist_args.get('file_mtime_histogram'), hist_args.get('file_size_histogram'))
+  stat_state['extensions'] = HashBinCountAndValue()
+  stat_state['category'] = HashBinCountAndValue()
+  stat_state['top_n_file_size'] = RankItems(hist_args.get('top_n_file_size'))
+  stat_state['top_n_file_size_by_gid'] = RankItemsByKey(hist_args.get('top_n_file_size_by_gid'))
+  stat_state['top_n_file_size_by_sid'] = RankItemsByKey(hist_args.get('top_n_file_size_by_uid'))
+  stat_state['top_n_file_size_by_uid'] = RankItemsByKey(hist_args.get('top_n_file_size_by_uid'))
+  stat_state['total_by_sid'] = HashBinCountAndValue()
+  stat_state['total_by_uid'] = HashBinCountAndValue()
+  stat_state['total_by_gid'] = HashBinCountAndValue()
+
 
 '''
 File audit worker handler
@@ -257,6 +275,9 @@ class WorkerHandler(HydraWorker):
     self.ppath_adj = 0
     self.db = None
     self.db_client = None
+    self.db_container_counter = 0
+    self.db_collection_range = [0, 1]
+    self.stats_advanced = {}
     
     if args.get('db') and args['db'].get('db_type') != None:
       db_type = args['db']['db_type']
@@ -301,11 +322,86 @@ class WorkerHandler(HydraWorker):
       self.stats[s] = [0]*self.args['default_stat_array_len']
     for s in EXTRA_STATS_MAX_ARRAY:
       self.stats[s] = [0]*self.args['default_stat_array_len']
+    self.stats_advanced = {}
       
+  def consolidate_stats_db(self):
+    # When we read data from a DB we need to calculate both basic and histogram
+    # statistics
+    find_start = 0 # DEBUG:
+    find_end = 0 # DEBUG:
+    find_total = 0 # DEBUG:
+    hist_insert_start = 0 # DEBUG:
+    hist_insert_end = 0 # DEBUG:
+    hist_insert_total = 0 # DEBUG:
+    inbetween_start = 0 # DEBUG:
+    inbetween_total = 0 # DEBUG:
+    self.init_stats()
+    init_stats_histogram(self.stats_advanced, self.args)
+    hist_file_count_by_size = self.stats_advanced['hist_file_count_by_size']
+    hist_file_count_by_block_size = self.stats_advanced['hist_file_count_by_block_size']
+    hist_file_count_by_atime = self.stats_advanced['hist_file_count_by_atime']
+    hist_file_count_by_ctime = self.stats_advanced['hist_file_count_by_ctime']
+    hist_file_count_by_mtime = self.stats_advanced['hist_file_count_by_mtime']
+    extensions = self.stats_advanced['extensions']
+    category = self.stats_advanced['category']
+    top_n_files = self.stats_advanced['top_n_file_size']
+    top_n_files_gid = self.stats_advanced['top_n_file_size_by_gid']
+    top_n_files_sid = self.stats_advanced['top_n_file_size_by_sid']
+    top_n_files_uid = self.stats_advanced['top_n_file_size_by_uid']
+    total_by_sid = self.stats_advanced['total_by_sid']
+    total_by_uid = self.stats_advanced['total_by_uid']
+    total_by_gid = self.stats_advanced['total_by_gid']
+    now = self.args.get('reference_time', time.time())
+    bs = self.args['block_size']
+    
+    if self.db:
+      find_start = time.time()  # DEBUG:
+      for i in range(self.db_collection_range[0], self.db_collection_range[0]+self.db_collection_range[1]):
+        for record in self.db[self.args['files_table'] + '_%d'%i].find():
+          inbetween_start = time.time() # DEBUG:
+          file_size = record['filesize']
+          file_block_size = (file_size//bs + (not not file_size%bs))*bs   # A not not saves on if/else check. A number + True is the same as number + 1
+          hist_insert_start = time.time() # DEBUG:
+          hist_file_count_by_size.insert_data(file_size)
+          hist_file_count_by_block_size.insert_data(file_block_size)
+          hist_file_count_by_atime.insert_data(now - record['atime'], file_size)
+          hist_file_count_by_ctime.insert_data(now - record['ctime'], file_size)
+          hist_file_count_by_mtime.insert_data(now - record['mtime'], file_size)
+          hist_insert_end = time.time() # DEBUG:
+          hist_insert_total += (hist_insert_end - hist_insert_start)  # DEBUG:
+          extensions.insert_data(record['ext'].lower(), file_size)
+          category.insert_data(get_file_category(record['ext']), file_size)
+          top_n_files.insert_data(file_size, record)
+          top_n_files_gid.insert_data(record.get('gid'), file_size, record)
+          top_n_files_sid.insert_data(record.get('sid'), file_size, record)
+          top_n_files_uid.insert_data(record.get('uid'), file_size, record)
+          total_by_sid.insert_data(record.get('sid'), file_size)
+          total_by_uid.insert_data(record.get('uid'), file_size)
+          total_by_gid.insert_data(record.get('gid'), file_size)
+          inbetween_total += (time.time() - inbetween_start)
+      find_end = time.time()  # DEBUG:
+      find_total = find_end - find_start
+      self.log.critical("***** FIND TOTAL TIME: %s"%find_total) # DEBUG:
+      self.log.critical("***** HIST INSERT TOTAL TIME: %s"%hist_insert_total) # DEBUG:
+      self.log.critical("***** BETWEEN TOTAL TIME: %s"%inbetween_total) # DEBUG:
+    else:
+      self.log.warn("DB not connected and consolidate_stats_db_called")
+    # Flush all histogram caches
+    flush_start = time.time() # DEBUG:
+    for key in self.stats_advanced.keys():
+      if hasattr(self.stats_advanced[key], 'flush'):
+        self.stats_advanced[key].flush()
+    flush_end = time.time() # DEBUG:
+    self.log.critical("***** FLUSH TOTAL TIME: %s"%(flush_end - flush_start)) # DEBUG:
+    
   def flush_cache(self):
     if self.cache_idx > 0:
+      self.log.critical("@#@#@#@# FLUSH CACHE: ITEM COUNT: %s"%self.cache_idx)
       if self.db:
-        result = self.db[self.args['files_table']].insert_many(
+        self.log.critical("DEBUG: ******************** WRITE TO DB: COUNTER: %s, RANGE: %s"%(self.db_container_counter, self.db_collection_range))
+        table_name = self.args['files_table'] + '_%d'%(self.db_collection_range[0] + self.db_container_counter%self.db_collection_range[1])
+        self.db_container_counter += 1              # This essentially counts the number of flushes
+        result = self.db[table_name].insert_many(
             self.cache[0:self.cache_idx],
             ordered=False,
             bypass_document_validation=True,
@@ -402,13 +498,24 @@ class WorkerHandler(HydraWorker):
     
   def handle_extended_ops(self, client_msg):
     if not client_msg:
-      return True
+      return False
     cmd = client_msg.get('op')
-    if cmd == 'update_db_name':
-      self.args['db']['db_name'] = client_msg.get('name')
-      self.init_db()
+    if cmd == 'update_db_settings':
+      self.db_collection_range = client_msg.get('collection_range', self.db_collection_range)
+      new_db_name = client_msg.get('name')
+      if new_db_name:
+        self.args['db']['db_name'] = new_db_name
+        self.init_db()
+    elif cmd == 'return_stats_db':
+      self._set_state('processing')
+      self.consolidate_stats_db()
+      if client_msg.get('get_cstats'):
+        record = self.db[self.args['cstats_table']].find_one({'type': 'client'})
+        self.stats.update(record['stats'])
+      self._send_client('stats_db', {'stats': self.stats, 'stats_advanced': self.stats_advanced})
+      self._set_state('idle')
     else:
-      self.log.warn("Unhandled worker command: %s"%client_msg)
+      return False
     return True
     
   def handle_stats_collection(self):
@@ -426,7 +533,8 @@ class ClientProcessor(HydraClient):
   def __init__(self, worker_class, args={}):
     super(ClientProcessor, self).__init__(worker_class, args)
     self.init_db(recreate_db=args.get('db', {}).get('cmd_recreate_db'))
-    self.stats_histogram = {}
+    self.stats_advanced = {}
+    self.write_cstats = True
   
   def init_db(self, init_client=True, init_db=True, recreate_db=False):
     if self.args.get('db') and self.args['db'].get('db_type') != None:
@@ -448,7 +556,20 @@ class ClientProcessor(HydraClient):
       else:
         self.log.critical('Unknown DB type of %s specified.'%db_type)
         sys.exit(1)
-    
+        
+  def init_db_collection_range(self):
+      split = self.args['db'].get('db_containers')//self.num_workers
+      remainder = self.args['db'].get('db_containers') - (split*self.num_workers)
+      rstart = 0
+      for set in [self.workers, self.shutdown_pending]:
+        for w in set:
+          incr = split
+          if remainder > 0:
+            incr += 1
+            remainder -= 1
+          set[w]['db_collection_range'] = [rstart, incr]
+          rstart += incr
+          
   def init_stats(self, stat_state):
     super(ClientProcessor, self).init_stats(stat_state)
     for s in (EXTRA_BASIC_STATS + EXTRA_STATS_MAX):
@@ -458,23 +579,6 @@ class ClientProcessor(HydraClient):
     for s in EXTRA_STATS_MAX_ARRAY:
       self.stats[s] = [0]*self.args['default_stat_array_len']
       
-  def init_stats_histogram(self, stat_state):
-    # Histogram statistics
-    stat_state['hist_file_count_by_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
-    stat_state['hist_file_count_by_block_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
-    stat_state['hist_file_count_by_atime'] = HistogramStat2D(self.args.get('file_atime_histogram'), self.args.get('file_size_histogram'))
-    stat_state['hist_file_count_by_ctime'] = HistogramStat2D(self.args.get('file_ctime_histogram'), self.args.get('file_size_histogram'))
-    stat_state['hist_file_count_by_mtime'] = HistogramStat2D(self.args.get('file_mtime_histogram'), self.args.get('file_size_histogram'))
-    stat_state['extensions'] = HashBinCountAndValue()
-    stat_state['category'] = HashBinCountAndValue()
-    stat_state['top_n_file_size'] = RankItems(self.args.get('top_n_file_size'))
-    stat_state['top_n_file_size_by_gid'] = RankItemsByKey(self.args.get('top_n_file_size_by_gid'))
-    stat_state['top_n_file_size_by_sid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
-    stat_state['top_n_file_size_by_uid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
-    stat_state['total_by_sid'] = HashBinCountAndValue()
-    stat_state['total_by_uid'] = HashBinCountAndValue()
-    stat_state['total_by_gid'] = HashBinCountAndValue()
-
   def consolidate_stats(self):
     super(ClientProcessor, self).consolidate_stats()
     for set in [self.workers, self.shutdown_pending, self.shutdown_workers]:
@@ -490,63 +594,31 @@ class ClientProcessor(HydraClient):
           add_to_per_depth(self.stats[s], set[w]['stats'][s])
         for s in EXTRA_STATS_MAX_ARRAY:
           max_to_per_depth(self.stats[s], set[w]['stats'][s])
-    if self.db:
-      if self.stats['processed_files'] > 0:
-        result = self.db[self.args['stats_table']].replace_one(
-            {'type': 'client'},
-            {'type': 'client', 'stats': self.stats},
-            upsert=True,
-        )
-          
+    if self.db and self.write_cstats:
+      result = self.db[self.args['cstats_table']].replace_one(
+          {'type': 'client'},
+          {
+            'type': 'client',
+            'stats': self.stats,
+            'timestamp': time.time(),
+            # Add any additional client wide stats to save to DB here
+          },
+          upsert=True,
+      )
+
   def consolidate_stats_db(self):
-    # When we read data from a DB we need to calculate both basic and histogram
-    # statistics
-    self.init_stats(self.stats)
-    self.init_stats_histogram(self.stats_histogram)
-    hist_file_count_by_size = self.stats_histogram['hist_file_count_by_size']
-    hist_file_count_by_block_size = self.stats_histogram['hist_file_count_by_block_size']
-    hist_file_count_by_atime = self.stats_histogram['hist_file_count_by_atime']
-    hist_file_count_by_ctime = self.stats_histogram['hist_file_count_by_ctime']
-    hist_file_count_by_mtime = self.stats_histogram['hist_file_count_by_mtime']
-    extensions = self.stats_histogram['extensions']
-    category = self.stats_histogram['category']
-    top_n_files = self.stats_histogram['top_n_file_size']
-    top_n_files_gid = self.stats_histogram['top_n_file_size_by_gid']
-    top_n_files_sid = self.stats_histogram['top_n_file_size_by_sid']
-    top_n_files_uid = self.stats_histogram['top_n_file_size_by_uid']
-    total_by_sid = self.stats_histogram['total_by_sid']
-    total_by_uid = self.stats_histogram['total_by_uid']
-    total_by_gid = self.stats_histogram['total_by_gid']
-    now = self.args.get('reference_time', time.time())
-    bs = self.args['block_size']
-    
-    if self.db:
-      for record in self.db[self.args['stats_table']].find({"type": "client"}, limit=1):
-        self.stats = dict(record.get('stats'))
-      for record in self.db[self.args['files_table']].find():
-        file_size = record['filesize']
-        file_block_size = (file_size//bs + (not not file_size%bs))*bs   # A not not saves on if/else check. A number + True is the same as number + 1
-        hist_file_count_by_size.insert_data(file_size)
-        hist_file_count_by_block_size.insert_data(file_block_size)
-        hist_file_count_by_atime.insert_data(now - record['atime'], file_size)
-        hist_file_count_by_ctime.insert_data(now - record['ctime'], file_size)
-        hist_file_count_by_mtime.insert_data(now - record['mtime'], file_size)
-        extensions.insert_data(record['ext'], file_size)
-        category.insert_data(get_file_category(record['ext']), file_size)
-        top_n_files.insert_data(file_size, record)
-        top_n_files_gid.insert_data(record.get('gid'), file_size, record)
-        top_n_files_sid.insert_data(record.get('sid'), file_size, record)
-        top_n_files_uid.insert_data(record.get('uid'), file_size, record)
-        total_by_sid.insert_data(record.get('sid'), file_size)
-        total_by_uid.insert_data(record.get('uid'), file_size)
-        total_by_gid.insert_data(record.get('gid'), file_size)
-    else:
-      self.log.warn("DB not connected and consolidate_stats_db_called")
-    # Flush all histogram caches
-    for key in self.stats_histogram.keys():
-      if hasattr(self.stats_histogram[key], 'flush'):
-        self.stats_histogram[key].flush()
-    
+    init_stats_histogram(self.stats_advanced, self.args)
+    for set in [self.workers, self.shutdown_pending, self.shutdown_workers]:
+      for w in set:
+        if not set[w].get('stats_advanced'):
+          continue
+        # Iterate over each histogram and merge
+        for k in set[w]['stats_advanced']:
+          if k in self.stats_advanced:
+            self.stats_advanced[k].merge(set[w]['stats_advanced'][k])
+          else:
+            self.log.error('Stats merge encountered a mismatch')
+          
   def handle_extended_server_cmd(self, svr_msg):
     cmd = svr_msg.get('cmd')
     if cmd == 'recreate_db':
@@ -558,29 +630,54 @@ class ClientProcessor(HydraClient):
         return True
       self.db_client.drop_database(self.args['db']['db_name'])
       self.db = self.db_client[self.args['db']['db_name']]
-    elif cmd == 'update_db_name':
+    elif cmd == 'update_db_settings':
       self.args['db']['db_name'] = svr_msg.get('name')
       self.init_db(init_client=False)
-      self.send_all_workers({
-          'op': 'update_db_name',
-          'name': svr_msg.get('name'),
-      })
-    #elif cmd == 'update_db_conn':
-    #  self.args['db']['db_host'] = cmd.get('host')
-    #  self.args['db']['db_port'] = cmd.get('port')
-    #  self.init_db()
-    #  self.send_all_workers({
-    #      'op': 'update_settings',
-    #      'settings': self.args,
-    #  })
+      self.init_db_collection_range()
+      for set in [self.workers, self.shutdown_pending]:
+        for w in set:
+          set[w]['obj'].send({
+              'op': 'update_db_settings',
+              'name': svr_msg.get('name'),
+              'collection_range': set[w]['db_collection_range'],
+          })
     elif cmd == 'return_stats_db':
-      self.consolidate_stats_db()
-      self._send_server({'cmd': 'stats_db', 'stats': self.stats, 'stats_histogram': self.stats_histogram})
+      self.write_cstats = False
+      get_cstats = True
+      for set in [self.workers, self.shutdown_pending]:
+        for w in set:
+          set[w]['obj'].send({
+            'op': 'return_stats_db',
+            'get_cstats': get_cstats,
+          })
+          get_cstats = False
     else:
-      self.log.warn("Unhandled extended server command: %s"%svr_msg)
       return False
     return True
 
+  def handle_extended_worker_msg(self, wrk_msg):
+    cmd = wrk_msg.get('op')
+    if cmd == 'stats_db':
+      worker_id = wrk_msg.get('id')
+      all_stat_db_received = True
+      for set in [self.workers, self.shutdown_pending]:
+        for w in set:
+          if w == worker_id:
+            set[w]['stat_db_received'] = True
+            # Save the histogram stats
+            set[w]['stats'] = wrk_msg['data']['stats']
+            set[w]['stats_advanced'] = wrk_msg['data']['stats_advanced']
+          else:
+            if not set[w].get('stat_db_received'):
+              all_stat_db_received = False
+      if all_stat_db_received:
+        self.consolidate_stats()
+        self.consolidate_stats_db()
+        self._send_server({'cmd': 'stats_db', 'stats': self.stats, 'stats_advanced': self.stats_advanced})
+    else:
+      return False
+    return True
+    
   def handle_update_settings(self, cmd):
     self.args.update(cmd['settings'])
     self.send_all_workers({
@@ -589,6 +686,19 @@ class ClientProcessor(HydraClient):
     })
     return True
 
+  def handle_workers_connected(self):
+    if self.args.get('db') and self.args['db'].get('db_type') != None:
+      self.init_db_collection_range()
+      self.send_workers_db_collection_range()
+    
+  def send_workers_db_collection_range(self):
+    for set in [self.workers, self.shutdown_pending]:
+      for w in set:
+        set[w]['obj'].send({
+            'op': 'update_db_settings',
+            'collection_range': set[w]['db_collection_range'],
+        })
+    
 
 '''
 File audit server processor
@@ -603,23 +713,6 @@ class ServerProcessor(HydraServer):
     for s in EXTRA_STATS_MAX_ARRAY:
       stat_state[s] = [0]*self.args['default_stat_array_len']
   
-  def init_stats_histogram(self, stat_state):
-    # Histogram statistics
-    stat_state['hist_file_count_by_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
-    stat_state['hist_file_count_by_block_size'] = HistogramStatCountAndValue(self.args.get('file_size_histogram'))
-    stat_state['hist_file_count_by_atime'] = HistogramStat2D(self.args.get('file_atime_histogram'), self.args.get('file_size_histogram'))
-    stat_state['hist_file_count_by_ctime'] = HistogramStat2D(self.args.get('file_ctime_histogram'), self.args.get('file_size_histogram'))
-    stat_state['hist_file_count_by_mtime'] = HistogramStat2D(self.args.get('file_mtime_histogram'), self.args.get('file_size_histogram'))
-    stat_state['extensions'] = HashBinCountAndValue()
-    stat_state['category'] = HashBinCountAndValue()
-    stat_state['top_n_file_size'] = RankItems(self.args.get('top_n_file_size'))
-    stat_state['top_n_file_size_by_gid'] = RankItemsByKey(self.args.get('top_n_file_size_by_gid'))
-    stat_state['top_n_file_size_by_sid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
-    stat_state['top_n_file_size_by_uid'] = RankItemsByKey(self.args.get('top_n_file_size_by_uid'))
-    stat_state['total_by_sid'] = HashBinCountAndValue()
-    stat_state['total_by_uid'] = HashBinCountAndValue()
-    stat_state['total_by_gid'] = HashBinCountAndValue()
-
   def consolidate_stats(self):
     '''
     The returned stats object can be access using the key values on the left
@@ -687,15 +780,15 @@ class ServerProcessor(HydraServer):
     
   def consolidate_stats_db(self):
     self.stats_histogram = {}
-    self.init_stats_histogram(self.stats_histogram)
+    init_stats_histogram(self.stats_histogram, self.args)
     for set in [self.clients, self.shutdown_clients]:
       for c in set:
-        if not set[c]['stats_histogram']:
+        if not set[c]['stats_advanced']:
           continue
         # Iterate over each histogram and merge
-        for k in set[c]['stats_histogram']:
+        for k in set[c]['stats_advanced']:
           if k in self.stats_histogram:
-            self.stats_histogram[k].merge(set[c]['stats_histogram'][k])
+            self.stats_histogram[k].merge(set[c]['stats_advanced'][k])
           else:
             self.log.error('Stats merge encountered a mismatch')
         
@@ -727,7 +820,7 @@ class ServerProcessor(HydraServer):
     )
     if self.args['db']['db_svr_name']:
       self.send_client_command(
-        client, {'cmd': 'update_db_name', 'name': self.args['db']['db_name']}
+        client, {'cmd': 'update_db_settings', 'name': self.args['db']['db_name']}
       )
     if self.args.get('cmd_recreate_db'):
       self.send_client_command(
@@ -749,7 +842,7 @@ class ServerProcessor(HydraServer):
             # Update the normal stats
             self._process_client_stats(client, cmd)
             # Save the histogram stats
-            self.clients[client]['stats_histogram'] = cmd.get('stats_histogram')
+            self.clients[client]['stats_advanced'] = cmd['stats_advanced']
           else:
             if not set[c].get('stat_db_received'):
               all_stat_db_received = False
@@ -768,14 +861,11 @@ class ServerProcessor(HydraServer):
     if ui_cmd == 'recreate_db':
       self.args['cmd_recreate_db'] = True
       self.send_all_clients_command({'cmd': 'recreate_db'})
-    elif ui_cmd == 'update_db_name':
+    elif ui_cmd == 'update_db_settings':
       self.args['db']['db_name'] = cmd.get('name')
-    elif ui_cmd == 'update_db_conn':
-      self.args['db']['db_host'] = cmd.get('host')
-      self.args['db']['db_port'] = cmd.get('port')
     elif ui_cmd == 'stat_consolidate':
       self.args['cmd_stats_consolidate'] = True
-      self.send_all_clients_command({'cmd': 'return_stats_db'})
+      #self.send_all_clients_command({'cmd': 'return_stats_db'})
       # Set a flag in the client state to track when all stats db have been returned
       for key in self.clients:
         self.clients[key]['stat_db_received'] = False
@@ -795,6 +885,13 @@ def AddParserOptions(parser, raw_cli):
     parser.add_option("--connect", "-c",
                       default=None,
                       help="FQDN or IP address of the Hydra server.")
+    parser.add_option("--client",
+                      default=None,
+                      action="append",
+                      help="Specify the clients the server will connect to and "
+                           "control. Use multiple --client options to specify "
+                           "multiple clients. (Only used for stat_consolidate "
+                           "currently)")
     parser.add_option("--port",
                       default=HydraUtils.DEFAULT_LISTEN_PORT,
                       help="Port to listen when running as a server and port to connect to as a client.")
@@ -979,6 +1076,7 @@ def main():
     path_depth_adj = 0
     start_time = 0
     end_time = 0
+    client_addrs = options.client
     startup = True
     # Calculate an offset for the path depth. We want a depth of 0 to represent
     # the starting point of the directory scan. This naturally only occurs when
@@ -1001,6 +1099,7 @@ def main():
       'select_poll_interval': options.select_poll_interval,
       # EXAMPLE:
       # Application specific variables
+      'clients': client_addrs,
       'reference_time': time.time(),
       'path_depth_adj': path_depth_adj,
       'default_stat_array_len': options.default_stat_array_len,
@@ -1023,7 +1122,7 @@ def main():
     # EXAMPLE:
     # Handle specific command line switches
     if options.db_svr_name:
-      svr.send({'cmd': 'update_db_name', 'name': options.db_name})
+      svr.send({'cmd': 'update_db_settings', 'name': options.db_name})
     if options.stat_consolidate:
       svr.send({'cmd': 'stat_consolidate'})
     else:
@@ -1115,6 +1214,7 @@ def main():
           'db_name': options.db_name,
           'db_host': options.db_host,
           'db_port': options.db_port,
+          'db_containers': DEFAULT_CONFIG['db_containers'],
           'db_svr_name': options.db_svr_name,
           'recreate_db': options.recreate_db,
         }
