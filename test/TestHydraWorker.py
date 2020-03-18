@@ -13,6 +13,15 @@ import logging.config
 import select
 import socket
 
+if __package__ is None:
+  # test code is run from the ./test directory.  add the parent
+  # directory to the path
+  current_file = inspect.getfile(inspect.currentframe())
+  base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
+  sys.path.insert(0, base_path)
+from HydraWorker import HydraWorker
+import HydraUtils
+
 TEST_PATH = os.path.join('test', 'data')
 RANDOM_SEED = 42
 NUM_DIRS = 10
@@ -24,15 +33,6 @@ POLL_WAIT_SECONDS = 5
 FILE_DELAY = 1          # Time in seconds
 LOGGER_CONFIG = None
 WORKER_LOGGER_CONFIG = dict(HydraUtils.LOGGING_WORKER_CONFIG)
-
-if __package__ is None:
-  # test code is run from the ./test directory.  add the parent
-  # directory to the path
-  current_file = inspect.getfile(inspect.currentframe())
-  base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
-  sys.path.insert(0, base_path)
-from HydraWorker import HydraWorker
-import HydraUtils
 
 
 """
