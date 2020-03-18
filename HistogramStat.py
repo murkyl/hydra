@@ -23,6 +23,7 @@ CATEGORY_APP_EXTENSIONS = [
   'dll',    # Windows Dynamic Link Libraries
   'exe',    # Windows Executable
   'ko',     # Linux kernel module
+  'lib',    # Library
   'msi',    # Microsoft Installer
   'so',     # Linux shared object
 ]
@@ -326,6 +327,10 @@ CATEGORIES = {
 }
 
 CATEGORY_MAP = {}
+
+
+import logging
+
 
 def get_file_category(file_ext, categories=CATEGORIES, notfound='other'):
   global CATEGORY_MAP
@@ -669,7 +674,9 @@ class RankItems():
     return self.item_count
     
   def get_rank_list(self):
-    return self.ranked_items[-self.item_count:]
+    if self.item_count:
+      return self.ranked_items[-self.item_count:]
+    return []
     
   def insert_data(self, rank, data):
     if rank > self.ranked_items[0][0]:

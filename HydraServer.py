@@ -469,6 +469,7 @@ class HydraServer(object):
     """
     Fill in docstring
     """
+    self.log.info('Server sending statistics request to clients')
     cmd = {'cmd': 'return_stats'}
     for c in self.clients:
       self.send_client_command(c, cmd)
