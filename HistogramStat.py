@@ -19,8 +19,12 @@ __license__ = "MIT"
 __copyright__ = """Copyright 2020 Andrew Chung"""
 
 CATEGORY_APP_EXTENSIONS = [
-  'exe',    #
-  'com',    #
+  'com',    # DOS command file
+  'dll',    # Windows Dynamic Link Libraries
+  'exe',    # Windows Executable
+  'ko',     # Linux kernel module
+  'msi',    # Microsoft Installer
+  'so',     # Linux shared object
 ]
 
 CATEGORY_AUDIO_EXTENSIONS = [
@@ -240,6 +244,8 @@ CATEGORY_SOURCE_CODE_EXTENSIONS = [
   # Fortran
   'f', 'for', 'f90',
   'go',     # Go
+  # HTML
+  'html', 'css',
   # Java
   'class', 'java',
   'js',     # Javascript
@@ -344,6 +350,9 @@ class HashBinCountAndValue():
     self.bins = {}
     self.keys_cache = []
     self.item_count = 0
+    
+  def __len__(self):
+    return self.item_count
     
   def insert_data(self, key, data):
     if not key in self.keys_cache:
@@ -652,26 +661,23 @@ class HistogramStat2D(HistogramStat):
 class RankItems():
   def __init__(self, max_count=100):
     self.max_count = max_count
+    self.item_count = 0
     # Each item in the ranked_items list is an array of [rank, data]
     self.ranked_items = [[-1, None]]*max_count
+
+  def __len__(self):
+    return self.item_count
     
   def get_rank_list(self):
-    # Filter out any unused entries which are denoted by a -1 for the rank
-    start_idx = -1
-    for i in self.ranked_items:
-      if i[0] != -1:
-        start_idx += 1
-        break
-      else:
-        start_idx += 1
-    if start_idx == -1:
-      return []
-    return self.ranked_items[start_idx:]
+    return self.ranked_items[-self.item_count:]
     
   def insert_data(self, rank, data):
     if rank > self.ranked_items[0][0]:
       self.ranked_items[0] = [rank, data]
       self.ranked_items.sort(key=lambda x: x[0])
+      self.item_count += 1
+      if self.item_count > self.max_count:
+        self.item_count = self.max_count
     
   def merge(self, other):
     if not isinstance(other, RankItems):
@@ -679,12 +685,24 @@ class RankItems():
     self.ranked_items.extend(other.ranked_items)
     self.ranked_items.sort(key=lambda x: x[0])
     self.ranked_items = self.ranked_items[-self.max_count:]
+    self.item_count = self.max_count
+    for i in self.ranked_items:
+      if i[0] == -1:
+        self.item_count -= 1
+      else:
+        break
 
 
 class RankItemsByKey():
   def __init__(self, max_count=100):
     self.max_count = max_count
     self.ranked_by_key = {}
+    
+  def __len__(self):
+    count = 0
+    for k in self.ranked_by_key:
+      count += len(self.ranked_by_key[k])
+    return count
     
   def get_rank_list(self):
     data = {}
@@ -701,7 +719,6 @@ class RankItemsByKey():
     if not isinstance(other, RankItemsByKey):
       raise(TypeError('An object of type RankItemsByKey required'))
     for key in other.ranked_by_key:
-      rank_list = self.ranked_by_key.get(key)
-      if not rank_list:
+      if not key in self.ranked_by_key:
         self.ranked_by_key[key] = RankItems(self.max_count)
       self.ranked_by_key[key].merge(other.ranked_by_key[key])
