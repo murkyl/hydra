@@ -136,8 +136,8 @@ class HydraWorker(multiprocessing.Process):
     self.args = dict(args)
     self.loopback_addr = args.get('loopback_addr', HydraUtils.LOOPBACK_ADDR)
     self.loopback_port = args.get('loopback_port', HydraUtils.LOOPBACK_PORT)
-    self.client_conn = None             # Sockets used to communicate between the client and worker
-    self.worker_conn = None             # Sockets used to communicate between the client and worker
+    self.client_conn = None             # Socket used to communicate between the client and worker
+    self.worker_conn = None             # Socket used to communicate between the client and worker
     self.work_queue = deque()           # Queue used to hold work items
     self.inputs = []                    # Sockets from which we expect to read from through a select call
     self.stats = {}
@@ -248,7 +248,7 @@ class HydraWorker(multiprocessing.Process):
     
   def init_process(self):
     """
-    Called by the main loop at the beggining after logging is configured.
+    Called by the main loop at the beginning after logging is configured.
     Place any init routines that are required to be run in the context of the
     worker process versus the context of the main program here.
     """
@@ -367,7 +367,6 @@ class HydraWorker(multiprocessing.Process):
                 self.log.warn("Unknown command received: %r"%data)
           else:
             self.log.error("Input ready but no data received")
-      
       # Handle exceptions
       for s in exceptional:
         self.log.critical('Handling exceptional condition for %r'%s)
