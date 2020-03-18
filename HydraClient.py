@@ -102,6 +102,14 @@ class HydraClient(object):
     # Sockets from which we expect to read from through a select call
     self.inputs = []
     
+  def init_process(self):
+    """
+    Called by the main loop at the beginning after logging is configured.
+    Place any init routines that are required to be run in the context of the
+    client process versus the context of the main program here.
+    """
+    pass
+    
   def init_stats(self, stat_state):
     """
     This method is called to initialize the statistics of this client.
@@ -129,7 +137,7 @@ class HydraClient(object):
     except Exception as e:
       self.log.exception(e)
 
-  def handle_extended_worker_msg(self, raw_data):
+  def handle_extended_worker_msg(self, wrk_msg):
     """
     Called by the main loop when an unknown command is found
     This can be used to support custom commands from a HydraWorker without
@@ -141,7 +149,7 @@ class HydraClient(object):
     """
     return False
     
-  def handle_extended_server_cmd(self, raw_data):
+  def handle_extended_server_cmd(self, svr_msg):
     """
     Called by the main loop when an unknown command is found
     This can be used to support custom commands from a HydraClient without
@@ -159,13 +167,18 @@ class HydraClient(object):
     """
     return True
     
+  def handle_workers_connected(self):
+    """
+    Called once when the all the workers connect to the client
+    """
+    pass
+    
   def connect(self, server_addr, server_port=HydraUtils.DEFAULT_LISTEN_PORT):
     """
     Fill in docstring
     """
     self.server = socket.create_connection((server_addr, server_port))
     self.server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-    self.inputs.append(self.server)
     self._set_state('connected')
   
   def get_num_workers(self):
@@ -258,10 +271,11 @@ class HydraClient(object):
     """
     if self.num_workers == 0:
       self.set_workers()
-    self._set_state('idle')
+    # Client will enter idle state when all workers have connected
     
     idle_count = 0
     start_time = time.time()
+    self.init_process()
     while not self.state == 'shutdown':
       readable = []
       exceptional = []
@@ -659,9 +673,15 @@ class HydraClient(object):
         self.log.debug("Cannot change state out of shutdown pending or shutdown to: %s"%next_state)
         next_state = self.state
     self.state = next_state
-    if next_state == 'idle':
-      self._send_server_stats()
     if (old_state != next_state):
+      # Special case to only run the init_process after all workers connect
+      if old_state == 'connected':
+        self.handle_workers_connected()
+        # After all workers are connected we add the server connection
+        # to the inputs we listen for commands
+        self.inputs.append(self.server)
+      if next_state == 'idle':
+        self._send_server_stats()
       self._send_server({'cmd': 'state', 'state': self.state, 'prev_state': old_state})
       self.log.debug('Client state change: %s ==> %s'%(old_state, next_state))
     return old_state
