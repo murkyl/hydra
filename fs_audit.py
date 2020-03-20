@@ -303,7 +303,7 @@ class WorkerHandler(HydraWorker):
     
     # You can configure additional loggers by adding new variables and using
     # the correct logger name
-    self.audit = logging.getLogger('audit')
+    #self.audit = logging.getLogger('audit')
     
   def init_db(self):
     if self.args.get('db') and self.args['db'].get('db_type') != None:
@@ -999,7 +999,7 @@ def AddParserOptions(parser, raw_cli):
                       help="Polling time in seconds (float) between UI statistics calls [Default: %default]")
     parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Logging, auditing and debug",
+    op_group = optparse.OptionGroup(parser, "Logging, and debug",
                            "File names support some variable replacement. {pid} will be replaced "
                            "with the PID of the process. {host} will be replaced by the host name of "
                            "the machine running the script. All variable substitutions for strftime "
@@ -1011,9 +1011,9 @@ def AddParserOptions(parser, raw_cli):
     #op_group.add_option("--log_format",
     #                  default="%(asctime)s - %(name)s - %(process)d - %(levelname)s - %(message)s",
     #                  help="Format for log output. Follows Python standard logging library. [Default: %default]")
-    op_group.add_option("--audit", "-a",
-                      default=None,
-                      help="If specified, we will log audit events to this file instead of the console.")
+    #op_group.add_option("--audit", "-a",
+    #                  default=None,
+    #                  help="If specified, we will log audit events to this file instead of the console.")
     #op_group.add_option("--audit_format",
     #                  default="%(message)s",
     #                  help="Format for audit output. Follows Python standard logging library. [Default: %default]")
@@ -1070,22 +1070,22 @@ def main():
   HydraUtils.config_logger(logger_config, '', log_level=log_level, file=options.log)
   # Setup auditing logger. Use this to output results to a separate file than
   # the normal logger
-  if options.audit:
-    logger_config['loggers']['audit']['handlers'] = ['audit']
-    logger_config['handlers']['audit']['filename'] = options.audit
+  #if options.audit:
+  #  logger_config['loggers']['audit']['handlers'] = ['audit']
+  #  logger_config['handlers']['audit']['filename'] = options.audit
   logging.config.dictConfig(logger_config)
   log = logging.getLogger('')
-  audit = logging.getLogger('audit')
+  #audit = logging.getLogger('audit')
   if isinstance(log.handlers[0], logging.handlers.RotatingFileHandler):
     try:
       log.handlers[0].doRollover()
     except:
       pass
-  if options.audit:
-    try:
-      audit.handlers[0].doRollover()
-    except:
-      pass
+  #if options.audit:
+  #  try:
+  #    audit.handlers[0].doRollover()
+  #  except:
+  #    pass
     
   if options.server:
     log.info("Starting up the server")
