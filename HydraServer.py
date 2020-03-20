@@ -66,6 +66,7 @@ class HydraServer(object):
     self.stats = {}
     self.state = 'initializing'
     self.work_queue = deque()
+    self.process_paths = []
     self.init_stats(self.stats)
     
     # Variables dealing with server and client communication
@@ -598,7 +599,9 @@ class HydraServer(object):
       return
     command = cmd.get('cmd')
     if command == "submit_work":
-      self._queue_work_paths(cmd.get('paths', []))
+      proc_paths = cmd.get('paths', [])
+      self._queue_work_paths(proc_paths)
+      self.process_paths.extend(proc_paths)
       self._process_dirs()
     elif command == 'shutdown':
       self._shutdown()
