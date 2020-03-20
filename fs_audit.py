@@ -162,7 +162,6 @@ EXTRA_BASIC_STATS = [
   'parent_dirs_total',                      # Total number of directories that have children
   'symlink_files',                          # Number of files that are symbolic links
   'num_workers',                            # 
-  'time_audit_log',                         #
   'time_client_processing',                 # 
   'time_data_save',                         # Track time to put file data into cache for DB insert
   'time_db_insert',                         # Track time spent inserting data into database
@@ -451,10 +450,8 @@ class WorkerHandler(HydraWorker):
       
     # We only want to look at regular files. We will ignore symlinks
     if stat.S_ISREG(file_lstats.st_mode):
-      time_check_3 = time.process_time()
-      self.audit.info(full_path_file)
       owner_sid = ''
-      time_check_4 = time.process_time()
+      time_check_3 = time.process_time()
       try:
         sd = GET_FILE_OWNER(full_path_file, file_lstats)
         pysid = GET_FILE_SID(sd)
@@ -462,7 +459,7 @@ class WorkerHandler(HydraWorker):
       except:
         self.log.log(9, 'Unable to get file permissions for: %s'%full_path_file)
       finally:
-        time_check_5 = time.process_time()
+        time_check_4 = time.process_time()
 
       fsize = file_lstats.st_size
       file_data = {
@@ -482,7 +479,7 @@ class WorkerHandler(HydraWorker):
       self.cache[self.cache_idx] = file_data
       self.cache_idx += 1
       self.cache_idx < self.args.get('cache_size') or self.flush_cache()
-      time_check_6 = time.process_time()
+      time_check_5 = time.process_time()
       
       # Update stats
       self.stats['file_size_total'] += fsize
@@ -493,11 +490,10 @@ class WorkerHandler(HydraWorker):
       incr_per_depth(self.stats['file_size_total_per_dir_depth'], self.ppath_len, fsize)
       incr_per_depth(self.stats['file_size_block_total_per_dir_depth'], self.ppath_len, block_fsize)
       # Update the time counters
-      time_check_7 = time.process_time()
-      self.stats['time_audit_log'] += (time_check_4 - time_check_3)
-      self.stats['time_sid_lookup'] += (time_check_5 - time_check_4)
-      self.stats['time_data_save'] += (time_check_6 - time_check_5)
-      self.stats['time_stats_update'] += (time_check_7 - time_check_6)
+      time_check_6 = time.process_time()
+      self.stats['time_sid_lookup'] += (time_check_4 - time_check_3)
+      self.stats['time_data_save'] += (time_check_5 - time_check_4)
+      self.stats['time_stats_update'] += (time_check_6 - time_check_5)
     elif stat.S_ISLNK(file_lstats.st_mode):
       # We didn't really process a symlink so account for it here as a symlink
       self.stats['symlink_files'] += 1
@@ -505,8 +501,8 @@ class WorkerHandler(HydraWorker):
     else:
       file_handled = False
     # Update the time counters
-    time_check_8 = time.process_time()
-    self.stats['time_handle_file'] += (time_check_8 - time_check_1)
+    time_check_7 = time.process_time()
+    self.stats['time_handle_file'] += (time_check_7 - time_check_1)
     return file_handled
     
   def handle_extended_ops(self, client_msg):
@@ -1196,7 +1192,7 @@ def main():
             elif state == 'shutdown':
               break
           elif cmd == 'stats':
-            audit.info('UI received stats update (%s):\n%s'%(
+            log.info('UI received stats update (%s):\n%s'%(
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                 json.dumps(
                     msg.get('stats'),
