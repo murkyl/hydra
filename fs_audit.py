@@ -161,6 +161,15 @@ EXTRA_BASIC_STATS = [
   'dir_depth_total',                        # Sum of the depth of every directory. Used to calculate the average directory depth
   'parent_dirs_total',                      # Total number of directories that have children
   'symlink_files',                          # Number of files that are symbolic links
+  'num_workers',                            # 
+  'time_audit_log',                         #
+  'time_client_processing',                 # 
+  'time_data_save',                         # Track time to put file data into cache for DB insert
+  'time_db_insert',                         # Track time spent inserting data into database
+  'time_handle_file',                       # Track total time spent handling a file
+  'time_sid_lookup',                        # Track time spent looking up SID
+  'time_stat',                              # Track time spent running a stat call
+  'time_stats_update',                      # Track time spent updating stats at the end of each file handled
 ]
 
 # Stats that track the maximum value
@@ -171,7 +180,7 @@ EXTRA_STATS_MAX = [
 ]
 
 # Stats that track the values at each directory level
-EXTRA_STATS_ARRAY = [
+EXTRA_STATS_DEPTH_ARRAY = [
   'dir_total_per_dir_depth',                # [Array] Count how many directories exist at a given depth from the root, e.g. 20 directories 1 level down, 40 directories 2 levels down. Used to calculate average directories at a given depth.
   'files_total_per_dir_depth',              # [Array] Count how many files exist at a given depth from the root.
   'file_size_total_per_dir_depth',          # [Array] Total of file logical bytes used at a given depth from the root. Used to calculate average file size at a given depth.
@@ -179,9 +188,14 @@ EXTRA_STATS_ARRAY = [
 ]
 
 # Stats that track the max values at each directory level
-EXTRA_STATS_MAX_ARRAY = [
+EXTRA_STATS_DEPTH_MAX_ARRAY = [
   'max_files_in_dir_per_dir_depth',         # [Array] Holds the maximum file count for any directory at a given depth from the root.
 ]
+
+EXTRA_STATS_ARRAY = [
+  'process_paths',                          # [Array] Which root paths were scanned
+]
+
 UI_STAT_POLL_INTERVAL = 30
 
 
@@ -319,22 +333,16 @@ class WorkerHandler(HydraWorker):
     for s in (EXTRA_BASIC_STATS + EXTRA_STATS_MAX):
       self.stats[s] = 0
     for s in EXTRA_STATS_ARRAY:
+      self.stats[s] = []
+    for s in EXTRA_STATS_DEPTH_ARRAY:
       self.stats[s] = [0]*self.args['default_stat_array_len']
-    for s in EXTRA_STATS_MAX_ARRAY:
+    for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
       self.stats[s] = [0]*self.args['default_stat_array_len']
     self.stats_advanced = {}
       
   def consolidate_stats_db(self):
     # When we read data from a DB we need to calculate both basic and histogram
     # statistics
-    find_start = 0 # DEBUG:
-    find_end = 0 # DEBUG:
-    find_total = 0 # DEBUG:
-    hist_insert_start = 0 # DEBUG:
-    hist_insert_end = 0 # DEBUG:
-    hist_insert_total = 0 # DEBUG:
-    inbetween_start = 0 # DEBUG:
-    inbetween_total = 0 # DEBUG:
     self.init_stats()
     init_stats_histogram(self.stats_advanced, self.args)
     hist_file_count_by_size = self.stats_advanced['hist_file_count_by_size']
@@ -355,20 +363,15 @@ class WorkerHandler(HydraWorker):
     bs = self.args['block_size']
     
     if self.db:
-      find_start = time.time()  # DEBUG:
       for i in range(self.db_collection_range[0], self.db_collection_range[0]+self.db_collection_range[1]):
         for record in self.db[self.args['files_table'] + '_%d'%i].find():
-          inbetween_start = time.time() # DEBUG:
           file_size = record['filesize']
           file_block_size = (file_size//bs + (not not file_size%bs))*bs   # A not not saves on if/else check. A number + True is the same as number + 1
-          hist_insert_start = time.time() # DEBUG:
           hist_file_count_by_size.insert_data(file_size)
           hist_file_count_by_block_size.insert_data(file_block_size)
           hist_file_count_by_atime.insert_data(now - record['atime'], file_size)
           hist_file_count_by_ctime.insert_data(now - record['ctime'], file_size)
           hist_file_count_by_mtime.insert_data(now - record['mtime'], file_size)
-          hist_insert_end = time.time() # DEBUG:
-          hist_insert_total += (hist_insert_end - hist_insert_start)  # DEBUG:
           extensions.insert_data(record['ext'].lower(), file_size)
           category.insert_data(get_file_category(record['ext']), file_size)
           top_n_files.insert_data(file_size, record)
@@ -378,27 +381,17 @@ class WorkerHandler(HydraWorker):
           total_by_sid.insert_data(record.get('sid'), file_size)
           total_by_uid.insert_data(record.get('uid'), file_size)
           total_by_gid.insert_data(record.get('gid'), file_size)
-          inbetween_total += (time.time() - inbetween_start)
-      find_end = time.time()  # DEBUG:
-      find_total = find_end - find_start
-      self.log.critical("***** FIND TOTAL TIME: %s"%find_total) # DEBUG:
-      self.log.critical("***** HIST INSERT TOTAL TIME: %s"%hist_insert_total) # DEBUG:
-      self.log.critical("***** BETWEEN TOTAL TIME: %s"%inbetween_total) # DEBUG:
     else:
       self.log.warn("DB not connected and consolidate_stats_db_called")
     # Flush all histogram caches
-    flush_start = time.time() # DEBUG:
     for key in self.stats_advanced.keys():
       if hasattr(self.stats_advanced[key], 'flush'):
         self.stats_advanced[key].flush()
-    flush_end = time.time() # DEBUG:
-    self.log.critical("***** FLUSH TOTAL TIME: %s"%(flush_end - flush_start)) # DEBUG:
     
   def flush_cache(self):
     if self.cache_idx > 0:
-      self.log.critical("@#@#@#@# FLUSH CACHE: ITEM COUNT: %s"%self.cache_idx)
       if self.db:
-        self.log.critical("DEBUG: ******************** WRITE TO DB: COUNTER: %s, RANGE: %s"%(self.db_container_counter, self.db_collection_range))
+        start = time.process_time()
         table_name = self.args['files_table'] + '_%d'%(self.db_collection_range[0] + self.db_container_counter%self.db_collection_range[1])
         self.db_container_counter += 1              # This essentially counts the number of flushes
         result = self.db[table_name].insert_many(
@@ -406,6 +399,7 @@ class WorkerHandler(HydraWorker):
             ordered=False,
             bypass_document_validation=True,
         )
+        self.stats['time_db_insert'] += (time.process_time() - start)
       else:
         #TODO: Add in memory stats handling here
         # Copy the histogram code from the client implementation and then send
@@ -436,6 +430,8 @@ class WorkerHandler(HydraWorker):
     """
     Fill in docstring
     """
+    time_check_1 = time.process_time()
+    file_handled = True
     full_path_file = os.path.join(dir, file)
     try:
       file_lstats = os.lstat(full_path_file)
@@ -449,16 +445,24 @@ class WorkerHandler(HydraWorker):
         else:
           self.log.error(e)
       return False
+    finally:
+      time_check_2 = time.process_time()
+      self.stats['time_stat'] += (time_check_2 - time_check_1)
+      
     # We only want to look at regular files. We will ignore symlinks
     if stat.S_ISREG(file_lstats.st_mode):
-      self.audit.info(os.path.join(dir, file))
+      time_check_3 = time.process_time()
+      self.audit.info(full_path_file)
       owner_sid = ''
+      time_check_4 = time.process_time()
       try:
         sd = GET_FILE_OWNER(full_path_file, file_lstats)
         pysid = GET_FILE_SID(sd)
         owner_sid = str(pysid).replace('PySID', 'SID')
       except:
         self.log.log(9, 'Unable to get file permissions for: %s'%full_path_file)
+      finally:
+        time_check_5 = time.process_time()
 
       fsize = file_lstats.st_size
       file_data = {
@@ -477,8 +481,8 @@ class WorkerHandler(HydraWorker):
       }
       self.cache[self.cache_idx] = file_data
       self.cache_idx += 1
-      if self.cache_idx >= self.args.get('cache_size'):
-        self.flush_cache()
+      self.cache_idx < self.args.get('cache_size') or self.flush_cache()
+      time_check_6 = time.process_time()
       
       # Update stats
       self.stats['file_size_total'] += fsize
@@ -488,13 +492,22 @@ class WorkerHandler(HydraWorker):
       incr_per_depth(self.stats['files_total_per_dir_depth'], self.ppath_len, 1)
       incr_per_depth(self.stats['file_size_total_per_dir_depth'], self.ppath_len, fsize)
       incr_per_depth(self.stats['file_size_block_total_per_dir_depth'], self.ppath_len, block_fsize)
+      # Update the time counters
+      time_check_7 = time.process_time()
+      self.stats['time_audit_log'] += (time_check_4 - time_check_3)
+      self.stats['time_sid_lookup'] += (time_check_5 - time_check_4)
+      self.stats['time_data_save'] += (time_check_6 - time_check_5)
+      self.stats['time_stats_update'] += (time_check_7 - time_check_6)
     elif stat.S_ISLNK(file_lstats.st_mode):
       # We didn't really process a symlink so account for it here as a symlink
       self.stats['symlink_files'] += 1
-      return False
+      file_handled = False
     else:
-      return False
-    return True
+      file_handled = False
+    # Update the time counters
+    time_check_8 = time.process_time()
+    self.stats['time_handle_file'] += (time_check_8 - time_check_1)
+    return file_handled
     
   def handle_extended_ops(self, client_msg):
     if not client_msg:
@@ -512,7 +525,11 @@ class WorkerHandler(HydraWorker):
       if client_msg.get('get_cstats'):
         record = self.db[self.args['cstats_table']].find_one({'type': 'client'})
         self.stats.update(record['stats'])
-      self._send_client('stats_db', {'stats': self.stats, 'stats_advanced': self.stats_advanced})
+        # Add any additional client wide stats you want to retrieve from the DB here
+      self._send_client('stats_db', {
+          'stats': self.stats,
+          'stats_advanced': self.stats_advanced,
+      })
       self._set_state('idle')
     else:
       return False
@@ -535,6 +552,7 @@ class ClientProcessor(HydraClient):
     self.init_db(recreate_db=args.get('db', {}).get('cmd_recreate_db'))
     self.stats_advanced = {}
     self.write_cstats = True
+    self.start_time = time.time()
   
   def init_db(self, init_client=True, init_db=True, recreate_db=False):
     if self.args.get('db') and self.args['db'].get('db_type') != None:
@@ -575,8 +593,10 @@ class ClientProcessor(HydraClient):
     for s in (EXTRA_BASIC_STATS + EXTRA_STATS_MAX):
       stat_state[s] = 0
     for s in EXTRA_STATS_ARRAY:
+      self.stats[s] = []
+    for s in EXTRA_STATS_DEPTH_ARRAY:
       self.stats[s] = [0]*self.args['default_stat_array_len']
-    for s in EXTRA_STATS_MAX_ARRAY:
+    for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
       self.stats[s] = [0]*self.args['default_stat_array_len']
       
   def consolidate_stats(self):
@@ -585,22 +605,25 @@ class ClientProcessor(HydraClient):
       for w in set:
         if not set[w]['stats']:
           continue
-        for s in EXTRA_BASIC_STATS:
+        for s in (EXTRA_BASIC_STATS + EXTRA_STATS_ARRAY):
           self.stats[s] += set[w]['stats'][s]
         for s in EXTRA_STATS_MAX:
           if set[w]['stats'][s] > self.stats[s]:
             self.stats[s] = set[w]['stats'][s]
-        for s in EXTRA_STATS_ARRAY:
+        for s in EXTRA_STATS_DEPTH_ARRAY:
           add_to_per_depth(self.stats[s], set[w]['stats'][s])
-        for s in EXTRA_STATS_MAX_ARRAY:
+        for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
           max_to_per_depth(self.stats[s], set[w]['stats'][s])
     if self.db and self.write_cstats:
+      # Write this clients statistics to the database
+      self.stats['num_workers'] = self.get_max_workers()
+      self.stats['time_client_processing'] = time.time() - self.start_time
+      self.stats['process_paths'] = self.args['process_paths']
       result = self.db[self.args['cstats_table']].replace_one(
           {'type': 'client'},
           {
             'type': 'client',
             'stats': self.stats,
-            'timestamp': time.time(),
             # Add any additional client wide stats to save to DB here
           },
           upsert=True,
@@ -664,7 +687,7 @@ class ClientProcessor(HydraClient):
         for w in set:
           if w == worker_id:
             set[w]['stat_db_received'] = True
-            # Save the histogram stats
+            # Save the stats data
             set[w]['stats'] = wrk_msg['data']['stats']
             set[w]['stats_advanced'] = wrk_msg['data']['stats_advanced']
           else:
@@ -709,8 +732,10 @@ class ServerProcessor(HydraServer):
     for s in (EXTRA_BASIC_STATS + EXTRA_STATS_MAX):
       stat_state[s] = 0
     for s in EXTRA_STATS_ARRAY:
+      self.stats[s] = []
+    for s in EXTRA_STATS_DEPTH_ARRAY:
       stat_state[s] = [0]*self.args['default_stat_array_len']
-    for s in EXTRA_STATS_MAX_ARRAY:
+    for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
       stat_state[s] = [0]*self.args['default_stat_array_len']
   
   def consolidate_stats(self):
@@ -757,14 +782,14 @@ class ServerProcessor(HydraServer):
       for c in set:
         if not set[c]['stats']:
           continue
-        for s in EXTRA_BASIC_STATS:
+        for s in (EXTRA_BASIC_STATS + EXTRA_STATS_ARRAY):
           self.stats[s] += set[c]['stats'][s]
         for s in EXTRA_STATS_MAX:
           if set[c]['stats'][s] > self.stats[s]:
             self.stats[s] = set[c]['stats'][s]
-        for s in EXTRA_STATS_ARRAY:
+        for s in EXTRA_STATS_DEPTH_ARRAY:
           add_to_per_depth(self.stats[s], set[c]['stats'][s])
-        for s in EXTRA_STATS_MAX_ARRAY:
+        for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
           max_to_per_depth(self.stats[s], set[c]['stats'][s])
     # Calculate all the stats
     self.stats.update({
@@ -810,6 +835,7 @@ class ServerProcessor(HydraServer):
     settings = {
       'path_depth_adj': self.args['path_depth_adj'],
       'reference_time': self.args['reference_time'],
+      'process_paths': self.process_paths,
     }
     self.send_client_command(
         client,

@@ -667,6 +667,8 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
     {'l': 'Deepest directory level',        'd': gbasic('max_dir_depth')},
     {'l': 'Widest directory',               'd': gbasic('max_dir_width')},
     {'l': 'Block size (bytes)',             'd': gconf('block_size')},
+    {'l': 'Scanned path(s)',                'd': ','.join(gbasic('process_paths'))},
+    {'l': 'Number of worker processes',     'd': gbasic('num_workers')},
   ]
   
   worksheet.set_column(col, col, 30)
