@@ -180,6 +180,12 @@ class HydraClient(object):
     self.server = socket.create_connection((server_addr, server_port))
     self.server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
     self._set_state('connected')
+    
+  def get_max_workers(self):
+    """
+    Fill in docstring
+    """
+    return(len(self.workers) + len(self.shutdown_pending) + len(self.shutdown_workers))
   
   def get_num_workers(self):
     """
