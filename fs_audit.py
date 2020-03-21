@@ -73,6 +73,10 @@ try:
   import pymongo
 except:
   pymongo = None
+try:
+  dir(time.process_time)
+except:
+  time.process_time = time.clock
 # On Windows systems check for WindowsError for platform specific exception handling
 try:
   dir(WindowsError)
