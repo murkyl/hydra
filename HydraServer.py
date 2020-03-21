@@ -397,7 +397,7 @@ class HydraServer(object):
       self.num_clients -= 1
       c = self.clients.pop(client)
       key = "%s:%s"%(str(client), c['addr'])
-      self.shutdown_clients[key] = {'stats': c['stats']}
+      self.shutdown_clients[key] = c
       try:
         c['conn'].close()
         client.close()
