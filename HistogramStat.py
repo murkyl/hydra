@@ -38,6 +38,7 @@ CATEGORY_AUDIO_EXTENSIONS = [
   'au',     # 
   'cda',    # 
   'cdda',   # 
+  'flac',   # *FLawless Audio Codec
   'm4a',    # MPEG-4 audio
   'mid',    # MIDI
   'midi',   # MIDI
@@ -84,6 +85,7 @@ CATEGORY_COMPRESSION_EXTENSIONS = [
   'ear',    # *Enterprise java ARchive
   'gz',     # GZip
   'gzip',   # GZip
+  'iso',    # ISO image of CD/DVD/BluRay
   'jar',    # *Java ARchive
   'lbr',    # 
   'lha',    # 
@@ -138,6 +140,7 @@ CATEGORY_DOCUMENT_EXTENSIONS = [
   'doc',    # Microsoft Word Document
   'docm',   # Microsoft Word Open XML Macro Enabled Document
   'docx',   # Microsoft Word Open XML Document
+  'epub',   # *Electronic PUBlication 
   'fods',   # OpenDocument Flat XML Spreadsheet
   'odm',    # OpenDocument Master Document
   'ods',    # OpenDocument Spreadsheet
@@ -280,6 +283,7 @@ CATEGORY_VIDEO_EXTENSIONS = [
   'f4p',    # Flash video
   'f4v',    # Flash video
   'flv',    # Flash video
+  'h264',   # h264 encoded video
   'm2ts',   # *Mpeg-2 Transport Stream
   'm2v',    # MPEG-2
   'm4p',    # MPEG-4 video with DRM
