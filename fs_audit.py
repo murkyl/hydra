@@ -290,6 +290,9 @@ class WorkerHandler(HydraWorker):
     self.cache_idx = 0
     self.ppath_len = 0
     self.ppath_adj = 0
+    self.ppath_prefix = []
+    self.ppath_prefix_len = 0
+    self.ppath_idx = 0
     self.db = None
     self.db_client = None
     self.db_container_counter = 0
@@ -327,6 +330,8 @@ class WorkerHandler(HydraWorker):
           self.log.warn("MongoDB client connected without DB name")
     
   def init_process(self):
+    self.fswalk_base = self.fswalk
+    self.fswalk = self.walk_dir
     self.init_db()
     
   def init_stats(self):
@@ -540,7 +545,21 @@ class WorkerHandler(HydraWorker):
     
   def handle_update_settings(self, cmd):
     self.args.update(cmd['settings'])
+    if self.args.get('prefix_paths'):
+      self.ppath_prefix = self.args.get('prefix_paths')
+      self.ppath_prefix_len = len(self.ppath_prefix)
+      self.ppath_idx = self.pid           # We want some worker/path distribution
     return True
+    
+  def walk_dir(self, dir):
+    if self.ppath_prefix_len:
+      prefix = self.ppath_prefix[self.ppath_idx%self.ppath_prefix_len]
+      self.ppath_idx += 1
+      merged_path = os.path.join(prefix, dir)
+      for root, dirs, files in self.fswalk_base(merged_path):
+        yield merged_path, dirs, files
+        return
+    return self.fswalk_base(dir)
 
 
 '''
@@ -619,6 +638,7 @@ class ClientProcessor(HydraClient):
       self.stats['num_workers'] = self.get_max_workers()
       self.stats['time_client_processing'] = time.time() - self.start_time
       self.stats['process_paths'] = self.args['process_paths']
+      self.stats['prefix_paths'] = self.args['prefix_paths']
       result = self.db[self.args['cstats_table']].replace_one(
           {'type': 'client'},
           {
@@ -835,6 +855,7 @@ class ServerProcessor(HydraServer):
     settings = {
       'path_depth_adj': self.args['path_depth_adj'],
       'reference_time': self.args['reference_time'],
+      'prefix_paths': self.args['prefix_paths'],
       'process_paths': self.process_paths,
     }
     self.send_client_command(
@@ -937,6 +958,14 @@ def AddParserOptions(parser, raw_cli):
                       help="Path to scan. Use of full paths is recommended as "
                            "clients will interpret this path according to their"
                            " own current working directory.")
+    op_group.add_option("--path_prefix_file",
+                      default=None,
+                      action="store",
+                      help="Path to a file holding prefixes to be appended to "
+                           "the path specified by the --path parameters. This "
+                           "can be used to allow this client to process the "
+                           "directory walk across parallel mounts/shares to "
+                           "improve directory walk performance.")
     op_group.add_option("--stat_consolidate",
                       action="store_true",
                       default=False,
@@ -1003,7 +1032,7 @@ def AddParserOptions(parser, raw_cli):
                       help="Polling time in seconds (float) between UI statistics calls [Default: %default]")
     parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Logging, and debug",
+    op_group = optparse.OptionGroup(parser, "Logging and debug",
                            "File names support some variable replacement. {pid} will be replaced "
                            "with the PID of the process. {host} will be replaced by the host name of "
                            "the machine running the script. All variable substitutions for strftime "
@@ -1095,6 +1124,8 @@ def main():
     log.info("Starting up the server")
     # Get paths to process from parsed CLI options
     proc_paths = HydraUtils.get_processing_paths(options.path)
+    # Get path prefix values
+    prefix_paths = HydraUtils.get_processing_paths([], options.path_prefix_file)
     if len(proc_paths) < 1 and not options.stat_consolidate:
       log.critical('A path via command line or stat_consolidate must be specified.')
       sys.exit(1)
@@ -1128,6 +1159,7 @@ def main():
       'clients': client_addrs,
       'reference_time': time.time(),
       'path_depth_adj': path_depth_adj,
+      'prefix_paths': prefix_paths,
       'default_stat_array_len': options.default_stat_array_len,
       'db': {
         'db_type': options.db_type,
