@@ -558,8 +558,8 @@ class WorkerHandler(HydraWorker):
       merged_path = os.path.join(prefix, dir)
       for root, dirs, files in self.fswalk_base(merged_path):
         yield merged_path, dirs, files
-        return
-    return self.fswalk_base(dir)
+    else:
+      yield self.fswalk_base(dir)
 
 
 '''
@@ -1129,6 +1129,10 @@ def main():
     if len(proc_paths) < 1 and not options.stat_consolidate:
       log.critical('A path via command line or stat_consolidate must be specified.')
       sys.exit(1)
+    if prefix_paths:
+      # If we are using prefix paths, we want to remove any absolute root path
+      # as we assume all paths are relative to the prefix. We only strip off /
+      proc_paths = [path[1:] if path[0] == '/' else path for path in proc_paths]
 
     path_depth_adj = 0
     start_time = 0
