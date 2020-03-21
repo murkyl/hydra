@@ -134,6 +134,7 @@ class HydraWorker(multiprocessing.Process):
     super(HydraWorker, self).__init__()
     self.log = logging.getLogger(__name__)
     self.args = dict(args)
+    self.fswalk = fswalk
     self.loopback_addr = args.get('loopback_addr', HydraUtils.LOOPBACK_ADDR)
     self.loopback_port = args.get('loopback_port', HydraUtils.LOOPBACK_PORT)
     self.client_conn = None             # Socket used to communicate between the client and worker
@@ -608,7 +609,7 @@ class HydraWorker(multiprocessing.Process):
       else:
         temp_work = []
         try:
-          for root, dirs, files in fswalk(work_dir):
+          for root, dirs, files in self.fswalk(work_dir):
             # Filter subdirectories and files by calling the method in the derived class
             before_filter_dirs = len(dirs)
             before_filter_files = len(files)
@@ -624,7 +625,7 @@ class HydraWorker(multiprocessing.Process):
             # This leaves the directories closer to the initial ones on the right
             # side of the work queue.
             for dir in reversed(dirs):
-              self.work_queue.appendleft({'type': 'dir', 'path': os.path.join(root, dir)})
+              self.work_queue.appendleft({'type': 'dir', 'path': os.path.join(work_dir, dir)})
             self.stats['queued_dirs'] += len(dirs)
             for file in files:
               # Keep track of how long we have been processing this
@@ -637,13 +638,13 @@ class HydraWorker(multiprocessing.Process):
                 temp_work.append(file)
                 continue
               try:
-                if(self.handle_file(work_dir, file)):
+                if(self.handle_file(root, file)):
                   self.stats['processed_files'] += 1
                 else:
-                  self.log.debug('Skipped file: %s'%os.path.join(work_dir, file))
+                  self.log.debug('Skipped file: %s'%os.path.join(root, file))
                   self.stats['skipped_files'] += 1
               except Exception as e:
-                self.log.debug('Skipped file: %s'%os.path.join(work_dir, file))
+                self.log.debug('Skipped file: %s'%os.path.join(root, file))
                 self.stats['skipped_files'] += 1
                 self.log.critical(traceback.format_exc())
             # We actually want to abort the tree walk as we want to handle the directory structure 1 directory at a time
