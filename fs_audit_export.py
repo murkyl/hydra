@@ -491,6 +491,7 @@ def insert_file_extensions_by_size(data, document, worksheet=None, cfg={}, row=0
       {'t': 'File count',                     'f': 'align_right'},
       {'t': 'File size',            'c': 30,  'f': 'base10_gb'},
       {'t': '% of total capacity',  'c': 30,  'f': '2_decimal_pct'},
+      {'t': 'Category',                       'f': 'align_right'},
   ]
   bins = data['detailed']['extensions'].get_bins()
   keys = list(bins.keys())
@@ -508,7 +509,13 @@ def insert_file_extensions_by_size(data, document, worksheet=None, cfg={}, row=0
     worksheet.write_row(
       row,
       col,
-      [key or '<No extension>', bins[key]['count'], bins[key]['total'], bins[key]['total']/total_file_size]
+      [
+        key or '<No extension>',
+        bins[key]['count'],
+        bins[key]['total'],
+        bins[key]['total']/total_file_size,
+        HistogramStat.get_file_category(key),
+      ]
     )
     row += 1
     if row > max_row:
@@ -667,8 +674,9 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
     {'l': 'Deepest directory level',        'd': gbasic('max_dir_depth')},
     {'l': 'Widest directory',               'd': gbasic('max_dir_width')},
     {'l': 'Block size (bytes)',             'd': gconf('block_size')},
-    {'l': 'Scanned path(s)',                'd': ','.join(gbasic('process_paths'))},
     {'l': 'Number of worker processes',     'd': gbasic('num_workers')},
+    {'l': 'Scanned path(s)',                'd': ','.join(gbasic('process_paths', []))},
+    {'l': 'Prefix path(s)',                 'd': ','.join(gbasic('prefix_paths', []))},
   ]
   
   worksheet.set_column(col, col, 30)
