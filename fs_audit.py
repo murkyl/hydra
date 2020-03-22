@@ -165,8 +165,9 @@ EXTRA_BASIC_STATS = [
   'dir_depth_total',                        # Sum of the depth of every directory. Used to calculate the average directory depth
   'parent_dirs_total',                      # Total number of directories that have children
   'symlink_files',                          # Number of files that are symbolic links
-  'num_workers',                            # 
-  'time_client_processing',                 # 
+  'num_clients',                            # Number of clients in use
+  'num_workers',                            # Number of workers in use
+  'time_client_processing',                 # Track time clients spend doing work
   'time_data_save',                         # Track time to put file data into cache for DB insert
   'time_db_insert',                         # Track time spent inserting data into database
   'time_handle_file',                       # Track total time spent handling a file
@@ -381,7 +382,7 @@ class WorkerHandler(HydraWorker):
         hist_file_count_by_ctime.insert_data(now - record['ctime'], file_size)
         hist_file_count_by_mtime.insert_data(now - record['mtime'], file_size)
         extensions.insert_data(record['ext'].lower(), file_size)
-        category.insert_data(get_file_category(record['ext']), file_size)
+        category.insert_data(get_file_category(record['ext'].lower()), file_size)
         top_n_files.insert_data(file_size, record)
         top_n_files_gid.insert_data(record.get('gid'), file_size, record)
         top_n_files_sid.insert_data(record.get('sid'), file_size, record)
@@ -527,19 +528,9 @@ class WorkerHandler(HydraWorker):
     elif cmd == 'return_stats_db':
       self._set_state('processing')
       self.consolidate_stats_db()
-      other = {}
-      if client_msg.get('get_cstats'):
-        record = self.db[self.args['cstats_table']].find_one({'type': 'client'})
-        self.stats.update(record['stats'])
-        for k in record.keys():
-          if k in ['_id', 'type', 'stats']:
-            continue
-          other[k] = record[k]
-        # Add any additional client wide stats you want to retrieve from the DB here
       self._send_client('stats_db', {
           'stats': self.stats,
           'stats_advanced': self.stats_advanced,
-          'other': other,
       })
       self._set_state('idle')
     else:
@@ -641,12 +632,12 @@ class ClientProcessor(HydraClient):
     """
     Add very specialized consolidation routines for non-standard statistics
     """
-    for set in [self.workers, self.shutdown_pending, self.shutdown_workers]:
-      for w in set:
-        wrk_other = set[w].get('other', {})
-        for k in wrk_other.keys():
-          if k == 'prefix_paths':
-            self.other['prefix_paths'] = wrk_other.get('prefix_paths')
+    record = self.db[self.args['cstats_table']].find_one({'type': 'client'})
+    for k in record.keys():
+      if k in ['_id', 'type', 'stats']:
+        continue
+      self.other[k] = record[k]
+    self.stats.update(record.get('stats', {}))
   
   def consolidate_stats(self):
     super(ClientProcessor, self).consolidate_stats()
@@ -717,14 +708,9 @@ class ClientProcessor(HydraClient):
           })
     elif cmd == 'return_stats_db':
       self.write_cstats = False
-      get_cstats = True
       for set in [self.workers, self.shutdown_pending]:
         for w in set:
-          set[w]['obj'].send({
-            'op': 'return_stats_db',
-            'get_cstats': get_cstats,
-          })
-          get_cstats = False
+          set[w]['obj'].send({'op': 'return_stats_db'})
     else:
       return False
     return True
