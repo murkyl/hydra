@@ -52,19 +52,19 @@ DEFAULT_CFG = {
 CELL_FORMAT = {}
 CELL_FORMAT_STRINGS = {
   None: {},
-  'header1': {'align': 'center', 'text_wrap': True, 'bold': True},
-  'align_right': {'align': 'right'},
-  'group_num1': {'align': 'right', 'num_format': '#,##0'},
-  '0_decimal_pct': {'align': 'right', 'num_format': '0%'},
-  '2_decimal': {'align': 'right', 'num_format': '#0.00'},
-  '2_decimal_pct': {'align': 'right', 'num_format': '0.00%'},
-  '4_decimal': {'align': 'right', 'num_format': '0.0000'},
-  'base10_gb': {'align': 'right', 'num_format': '[<1000000]0.00," KB";[<1000000000]0.00,," MB";0.00,,," GB"'},
-  'base2_gb': {'align': 'right', 'num_format': '[<1048576]0.00," KiB";[<1073741824]0.00,," MiB";0.00,,," GiB"'},
-  'gt_base10_gb': {'align': 'right', 'num_format': '[<1000000]"> "#0.00," KB";[<1000000000]"> "#0.00,," MB";"> "#0.00,,," GB"'},
-  'gt_base2_gb': {'align': 'right', 'num_format': '[<1048576]"> "#0.00," KiB";[<1073741824]"> "#0.00,," MiB";"> "#0.00,,," GiB"'},
-  'lt_base10_gb': {'align': 'right', 'num_format': '[<1000000]"<= "#0.00," KB";[<1000000000]"<= "#0.00,," MB";"<= "#0.00,,," GB"'},
-  'lt_base2_gb': {'align': 'right', 'num_format': '[<1048576]"<= "#0.00," KiB";[<1073741824]"<= "#0.00,," MiB";"<= "#0.00,,," GiB"'},
+  'header1':        {'align': 'center', 'text_wrap': True, 'bold': True},
+  'align_right':    {'align': 'right'},
+  'group_num1':     {'align': 'right', 'num_format': '#,##0'},
+  '0_decimal_pct':  {'align': 'right', 'num_format': '0%'},
+  '2_decimal':      {'align': 'right', 'num_format': '#0.00'},
+  '2_decimal_pct':  {'align': 'right', 'num_format': '0.00%'},
+  '4_decimal':      {'align': 'right', 'num_format': '0.0000'},
+  'base10_gb':      {'align': 'right', 'num_format': '[<1000000]0.00," KB";[<1000000000]0.00,," MB";0.00,,," GB"'},
+  'base2_gb':       {'align': 'right', 'num_format': '[<1048576]0.00," KiB";[<1073741824]0.00,," MiB";0.00,,," GiB"'},
+  'gt_base10_gb':   {'align': 'right', 'num_format': '[<1000000]"> "#0.00," KB";[<1000000000]"> "#0.00,," MB";"> "#0.00,,," GB"'},
+  'gt_base2_gb':    {'align': 'right', 'num_format': '[<1048576]"> "#0.00," KiB";[<1073741824]"> "#0.00,," MiB";"> "#0.00,,," GiB"'},
+  'lt_base10_gb':   {'align': 'right', 'num_format': '[<1000000]"<= "#0.00," KB";[<1000000000]"<= "#0.00,," MB";"<= "#0.00,,," GB"'},
+  'lt_base2_gb':    {'align': 'right', 'num_format': '[<1048576]"<= "#0.00," KiB";[<1073741824]"<= "#0.00,," MiB";"<= "#0.00,,," GiB"'},
 }
 
 def get_cell_format(workbook, format_name, format_dict=None):
@@ -691,7 +691,7 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
     {'l': 'Cumulative time SID lookup',     'd': gbasic('time_sid_lookup'),         'f': '4_decimal'},
     {'l': 'Cumulative time stats update',   'd': gbasic('time_stats_update'),       'f': '4_decimal'},
   ]
-  
+
   worksheet.set_column(col, col, 30)
   worksheet.set_column(col+1, col+1, 20, get_cell_format(document, 'align_right'))
   for x in dataset:
