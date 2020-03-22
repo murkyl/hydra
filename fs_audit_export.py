@@ -514,7 +514,7 @@ def insert_file_extensions_by_size(data, document, worksheet=None, cfg={}, row=0
         bins[key]['count'],
         bins[key]['total'],
         bins[key]['total']/total_file_size,
-        HistogramStat.get_file_category(key),
+        humanize(HistogramStat.get_file_category(key)),
       ]
     )
     row += 1
@@ -654,6 +654,7 @@ def insert_file_sizes_histogram(data, document, worksheet=None, cfg={}, row=0, c
   
 def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
   gbasic = lambda x, y='': data.get('basic', {}).get(x, y)
+  gother = lambda x, y='': data.get('other', {}).get(x, y)
   gconf = lambda x, y='': data.get('config', {}).get(x, y)
   dataset = [
     {'t': 'File system summary'},
@@ -675,12 +676,24 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
     {'l': 'Widest directory',               'd': gbasic('max_dir_width')},
     {'l': 'Block size (bytes)',             'd': gconf('block_size')},
     {'l': 'Number of worker processes',     'd': gbasic('num_workers')},
-    {'l': 'Scanned path(s)',                'd': ','.join(gbasic('process_paths', []))},
-    {'l': 'Prefix path(s)',                 'd': ','.join(gbasic('prefix_paths', []))},
+    {'l': 'Scanned path(s)',                'd': '\n'.join(gbasic('process_paths', [])), 'h': 15*len(gbasic('process_paths', ['']))},
+    {'l': 'Prefix path(s)',                 'd': '\n'.join(gother('prefix_paths', [])),  'h': 15*len(gother('prefix_paths', ['']))},
+    {'t': ''},
+    {'t': 'Processing summary'},
+    {'l': 'Files processed/second',         'd': (gbasic('processed_files')/float(gbasic('time_client_processing'))), 'f': '2_decimal'},
+    {'l': 'Number of clients',              'd': gbasic('num_clients')},
+    {'l': 'Total number of workers',        'd': gbasic('num_workers')},
+    {'l': 'Cumulative client process time', 'd': gbasic('time_client_processing'),  'f': '4_decimal'},
+    {'l': 'Cumulative DB insert time',      'd': gbasic('time_db_insert'),          'f': '4_decimal'},
+    {'l': 'Cumulative data save time',      'd': gbasic('time_data_save'),          'f': '4_decimal'},
+    {'l': 'Cumulative file process time',   'd': gbasic('time_handle_file'),        'f': '4_decimal'},
+    {'l': 'Cumulative time file stat',      'd': gbasic('time_stat'),               'f': '4_decimal'},
+    {'l': 'Cumulative time SID lookup',     'd': gbasic('time_sid_lookup'),         'f': '4_decimal'},
+    {'l': 'Cumulative time stats update',   'd': gbasic('time_stats_update'),       'f': '4_decimal'},
   ]
   
   worksheet.set_column(col, col, 30)
-  worksheet.set_column(col+1, col+1, 10, get_cell_format(document, 'align_right'))
+  worksheet.set_column(col+1, col+1, 20, get_cell_format(document, 'align_right'))
   for x in dataset:
     if x.get('t'):
       worksheet.merge_range(row, col, row, col+1, x['t'], get_cell_format(document, 'header1'))
@@ -688,6 +701,8 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
       data = x.get('d', '')
       worksheet.write(row, col, x.get('l', ''))
       worksheet.write(row, col + 1, data, get_cell_format(document, x.get('f')))
+      if x.get('h'):
+        worksheet.set_row(row, x.get('h'))
     row += 1
 
 def insert_top_n_files(data, document, worksheet=None, cfg={}, row=0, col=0):

@@ -292,7 +292,7 @@ class WorkerHandler(HydraWorker):
     self.ppath_adj = 0
     self.ppath_prefix = []
     self.ppath_prefix_len = 0
-    self.ppath_idx = 0
+    self.ppath_prefix_idx = 0
     self.db = None
     self.db_client = None
     self.db_container_counter = 0
@@ -307,7 +307,6 @@ class WorkerHandler(HydraWorker):
           self.log.warn('DB type of %s specified without a DB name. Expecting DB name to be updated by client or use --db_name parameter'%db_type)
     else:
       self.log.debug("No DB type specified. Using in memory stats collection.")
-    
     # You can configure additional loggers by adding new variables and using
     # the correct logger name
     #self.audit = logging.getLogger('audit')
@@ -330,8 +329,6 @@ class WorkerHandler(HydraWorker):
           self.log.warn("MongoDB client connected without DB name")
     
   def init_process(self):
-    self.fswalk_base = self.fswalk
-    self.fswalk = self.walk_dir
     self.init_db()
     
   def init_stats(self):
@@ -351,8 +348,12 @@ class WorkerHandler(HydraWorker):
   def consolidate_stats_db(self):
     # When we read data from a DB we need to calculate both basic and histogram
     # statistics
+    if not self.db:
+      self.log.warn("DB not connected and consolidate_stats_db_called")
+      return
     self.init_stats()
     init_stats_histogram(self.stats_advanced, self.args)
+    
     hist_file_count_by_size = self.stats_advanced['hist_file_count_by_size']
     hist_file_count_by_block_size = self.stats_advanced['hist_file_count_by_block_size']
     hist_file_count_by_atime = self.stats_advanced['hist_file_count_by_atime']
@@ -370,27 +371,24 @@ class WorkerHandler(HydraWorker):
     now = self.args.get('reference_time', time.time())
     bs = self.args['block_size']
     
-    if self.db:
-      for i in range(self.db_collection_range[0], self.db_collection_range[0]+self.db_collection_range[1]):
-        for record in self.db[self.args['files_table'] + '_%d'%i].find():
-          file_size = record['filesize']
-          file_block_size = (file_size//bs + (not not file_size%bs))*bs   # A not not saves on if/else check. A number + True is the same as number + 1
-          hist_file_count_by_size.insert_data(file_size)
-          hist_file_count_by_block_size.insert_data(file_block_size)
-          hist_file_count_by_atime.insert_data(now - record['atime'], file_size)
-          hist_file_count_by_ctime.insert_data(now - record['ctime'], file_size)
-          hist_file_count_by_mtime.insert_data(now - record['mtime'], file_size)
-          extensions.insert_data(record['ext'].lower(), file_size)
-          category.insert_data(get_file_category(record['ext']), file_size)
-          top_n_files.insert_data(file_size, record)
-          top_n_files_gid.insert_data(record.get('gid'), file_size, record)
-          top_n_files_sid.insert_data(record.get('sid'), file_size, record)
-          top_n_files_uid.insert_data(record.get('uid'), file_size, record)
-          total_by_sid.insert_data(record.get('sid'), file_size)
-          total_by_uid.insert_data(record.get('uid'), file_size)
-          total_by_gid.insert_data(record.get('gid'), file_size)
-    else:
-      self.log.warn("DB not connected and consolidate_stats_db_called")
+    for i in range(self.db_collection_range[0], self.db_collection_range[0]+self.db_collection_range[1]):
+      for record in self.db[self.args['files_table'] + '_%d'%i].find():
+        file_size = record['filesize']
+        file_block_size = (file_size//bs + (not not file_size%bs))*bs   # A not not saves on if/else check. A number + True is the same as number + 1
+        hist_file_count_by_size.insert_data(file_size)
+        hist_file_count_by_block_size.insert_data(file_block_size)
+        hist_file_count_by_atime.insert_data(now - record['atime'], file_size)
+        hist_file_count_by_ctime.insert_data(now - record['ctime'], file_size)
+        hist_file_count_by_mtime.insert_data(now - record['mtime'], file_size)
+        extensions.insert_data(record['ext'].lower(), file_size)
+        category.insert_data(get_file_category(record['ext']), file_size)
+        top_n_files.insert_data(file_size, record)
+        top_n_files_gid.insert_data(record.get('gid'), file_size, record)
+        top_n_files_sid.insert_data(record.get('sid'), file_size, record)
+        top_n_files_uid.insert_data(record.get('uid'), file_size, record)
+        total_by_sid.insert_data(record.get('sid'), file_size)
+        total_by_uid.insert_data(record.get('uid'), file_size)
+        total_by_gid.insert_data(record.get('gid'), file_size)
     # Flush all histogram caches
     for key in self.stats_advanced.keys():
       if hasattr(self.stats_advanced[key], 'flush'):
@@ -410,14 +408,16 @@ class WorkerHandler(HydraWorker):
         self.stats['time_db_insert'] += (time.process_time() - start)
       else:
         #TODO: Add in memory stats handling here
-        # Copy the histogram code from the client implementation and then send
-        # the data to the client for collation
+        # Copy the histogram code from the consolidate_stats_db() method
         pass
       self.cache_idx = 0
       
   def filter_subdirectories(self, root, dirs, files):
-    # No filtering is happening below. We are updating stats that are best
-    # collected when starting at a new directory.
+    """
+    No filtering is happening below. We are updating stats that are best
+    collected when starting at a new directory like counting the number of files
+    in a directory or the number of subdirectories in this directory.
+    """
     num_dirs = len(dirs)
     num_files = len(files)
     if num_dirs:
@@ -527,13 +527,19 @@ class WorkerHandler(HydraWorker):
     elif cmd == 'return_stats_db':
       self._set_state('processing')
       self.consolidate_stats_db()
+      other = {}
       if client_msg.get('get_cstats'):
         record = self.db[self.args['cstats_table']].find_one({'type': 'client'})
         self.stats.update(record['stats'])
+        for k in record.keys():
+          if k in ['_id', 'type', 'stats']:
+            continue
+          other[k] = record[k]
         # Add any additional client wide stats you want to retrieve from the DB here
       self._send_client('stats_db', {
           'stats': self.stats,
           'stats_advanced': self.stats_advanced,
+          'other': other,
       })
       self._set_state('idle')
     else:
@@ -548,13 +554,25 @@ class WorkerHandler(HydraWorker):
     if self.args.get('prefix_paths'):
       self.ppath_prefix = self.args.get('prefix_paths')
       self.ppath_prefix_len = len(self.ppath_prefix)
-      self.ppath_idx = self.pid           # We want some worker/path distribution
+      # TODO: Maybe use a rng or other method to determine starting idx instead
+      # of just using the PID and hoping that we get a uniform distribution
+      self.ppath_prefix_idx = self.pid
+      # Update our internal fswalk pointer to support adding path prefixes
+      self.fswalk_base = self.fswalk
+      self.fswalk = self.walk_dir
     return True
     
   def walk_dir(self, dir):
+    """
+    This method overrides the normal os.walk/fswalk in HydraWalker. The purpose
+    is to add path prefixes to the actual walk so that we can distribute the
+    work across multiple mount points/shares/drives. This works for some
+    parallel file systems where you can have multiple mount points to the same
+    name space but across multiple front end processors.
+    """
     if self.ppath_prefix_len:
-      prefix = self.ppath_prefix[self.ppath_idx%self.ppath_prefix_len]
-      self.ppath_idx += 1
+      prefix = self.ppath_prefix[self.ppath_prefix_idx%self.ppath_prefix_len]
+      self.ppath_prefix_idx += 1
       merged_path = os.path.join(prefix, dir)
       for root, dirs, files in self.fswalk_base(merged_path):
         yield merged_path, dirs, files
@@ -570,6 +588,7 @@ class ClientProcessor(HydraClient):
     super(ClientProcessor, self).__init__(worker_class, args)
     self.init_db(recreate_db=args.get('db', {}).get('cmd_recreate_db'))
     self.stats_advanced = {}
+    self.other = {}
     self.write_cstats = True
     self.start_time = time.time()
   
@@ -617,7 +636,18 @@ class ClientProcessor(HydraClient):
       self.stats[s] = [0]*self.args['default_stat_array_len']
     for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
       self.stats[s] = [0]*self.args['default_stat_array_len']
-      
+  
+  def consolidate_other(self):
+    """
+    Add very specialized consolidation routines for non-standard statistics
+    """
+    for set in [self.workers, self.shutdown_pending, self.shutdown_workers]:
+      for w in set:
+        wrk_other = set[w].get('other', {})
+        for k in wrk_other.keys():
+          if k == 'prefix_paths':
+            self.other['prefix_paths'] = wrk_other.get('prefix_paths')
+  
   def consolidate_stats(self):
     super(ClientProcessor, self).consolidate_stats()
     for set in [self.workers, self.shutdown_pending, self.shutdown_workers]:
@@ -635,16 +665,17 @@ class ClientProcessor(HydraClient):
           max_to_per_depth(self.stats[s], set[w]['stats'][s])
     if self.db and self.write_cstats:
       # Write this clients statistics to the database
+      self.stats['num_clients'] = 1
       self.stats['num_workers'] = self.get_max_workers()
       self.stats['time_client_processing'] = time.time() - self.start_time
       self.stats['process_paths'] = self.args['process_paths']
-      self.stats['prefix_paths'] = self.args['prefix_paths']
       result = self.db[self.args['cstats_table']].replace_one(
           {'type': 'client'},
           {
             'type': 'client',
             'stats': self.stats,
             # Add any additional client wide stats to save to DB here
+            'prefix_paths': self.args['prefix_paths'],
           },
           upsert=True,
       )
@@ -710,13 +741,21 @@ class ClientProcessor(HydraClient):
             # Save the stats data
             set[w]['stats'] = wrk_msg['data']['stats']
             set[w]['stats_advanced'] = wrk_msg['data']['stats_advanced']
+            # Save any other keys sent back as well
+            set[w]['other'] = wrk_msg['data'].get('other', {})
           else:
             if not set[w].get('stat_db_received'):
               all_stat_db_received = False
       if all_stat_db_received:
         self.consolidate_stats()
         self.consolidate_stats_db()
-        self._send_server({'cmd': 'stats_db', 'stats': self.stats, 'stats_advanced': self.stats_advanced})
+        self.consolidate_other()
+        self._send_server({
+            'cmd': 'stats_db',
+            'stats': self.stats,
+            'stats_advanced': self.stats_advanced,
+            'other': self.other,
+        })
     else:
       return False
     return True
@@ -747,6 +786,11 @@ class ClientProcessor(HydraClient):
 File audit server processor
 '''
 class ServerProcessor(HydraServer):
+  def __init__(self, args={}):
+    super(ServerProcessor, self).__init__(args)
+    self.stats_histogram = {}
+    self.other = {}
+    
   def init_stats(self, stat_state):
     super(ServerProcessor, self).init_stats(stat_state)
     for s in (EXTRA_BASIC_STATS + EXTRA_STATS_MAX):
@@ -757,6 +801,23 @@ class ServerProcessor(HydraServer):
       stat_state[s] = [0]*self.args['default_stat_array_len']
     for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
       stat_state[s] = [0]*self.args['default_stat_array_len']
+  
+  def consolidate_other(self):
+    """
+    Add very specialized consolidation routines for non-standard statistics
+    """
+    for set in [self.clients, self.shutdown_clients]:
+      for c in set:
+        client_other = set[c].get('other', {})
+        for k in client_other.keys():
+          if k == 'prefix_paths':
+            if not self.other.get('prefix_paths'):
+              self.other['prefix_paths'] = []
+            # Repeatedly converting the array to a dict and back is inefficient
+            # but this will happen only once per client and the number of prefix
+            # paths should be small so overall impact should be very low
+            self.other['prefix_paths'].extend(client_other.get('prefix_paths', []))
+            self.other['prefix_paths'] = sorted(list(dict.fromkeys(self.other['prefix_paths'])))
   
   def consolidate_stats(self):
     '''
@@ -811,6 +872,9 @@ class ServerProcessor(HydraServer):
           add_to_per_depth(self.stats[s], set[c]['stats'][s])
         for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
           max_to_per_depth(self.stats[s], set[c]['stats'][s])
+    if self.stats.get('process_paths'):
+      # Dedupe process paths
+      self.stats['process_paths'] = list(dict.fromkeys(self.stats['process_paths']))
     # Calculate all the stats
     self.stats.update({
       'average_file_size': self.stats['file_size_total']/self.stats['processed_files'] if self.stats['processed_files'] else 0,
@@ -822,7 +886,7 @@ class ServerProcessor(HydraServer):
       'average_files_per_dir_depth': divide_per_depth(self.stats['files_total_per_dir_depth'], self.stats['dir_total_per_dir_depth']),
     })
     return self.stats
-    
+  
   def consolidate_stats_db(self):
     self.stats_histogram = {}
     init_stats_histogram(self.stats_histogram, self.args)
@@ -843,6 +907,7 @@ class ServerProcessor(HydraServer):
           {
             'basic': self.stats,
             'detailed': self.stats_histogram,
+            'other': self.other,
             'config': {
                 'block_size': self.args.get('block_size'),
                 'number_base': self.args.get('number_base'),
@@ -890,12 +955,14 @@ class ServerProcessor(HydraServer):
             self._process_client_stats(client, cmd)
             # Save the histogram stats
             self.clients[client]['stats_advanced'] = cmd['stats_advanced']
+            self.clients[client]['other'] = cmd.get('other', {})
           else:
             if not set[c].get('stat_db_received'):
               all_stat_db_received = False
       if all_stat_db_received:
         self.consolidate_stats()
         self.consolidate_stats_db()
+        self.consolidate_other()
         self.export_stats()
         # After exporting stats, the server can terminate
         self._shutdown()
