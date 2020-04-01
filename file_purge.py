@@ -391,9 +391,15 @@ def main():
   log = logging.getLogger('')
   audit = logging.getLogger('audit')
   if isinstance(log.handlers[0], logging.handlers.RotatingFileHandler):
-    log.handlers[0].doRollover()
+    try:
+      log.handlers[0].doRollover()
+    except:
+      pass
   if options.audit:
-    audit.handlers[0].doRollover()
+    try:
+      audit.handlers[0].doRollover()
+    except:
+      pass
   
   if options.server:
     log.info("Starting up the server")
