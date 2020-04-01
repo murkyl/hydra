@@ -107,14 +107,20 @@ DEFAULT_CONFIG = {
   'time_delta_sec': 0,
   'current_time': 0,
   'purge': False,
+  'block_size': 8192,
 }
 
 # EXAMPLE:
 # Additional simple counting stats. Adding stats here requires the code below to
 # increment the counters somewhere.
 EXTRA_BASIC_STATS = [
+  'file_size_logical_scanned',
+  'file_size_logical_512byte_block_scanned',
+  'file_size_logical_8kbyte_block_scanned',
   'deleted_files',
-  'deleted_files_size_total',
+  'deleted_files_size_logical_total',
+  'deleted_files_size_512byte_block_total',
+  'deleted_files_size_8kbyte_block_total',
 ]
 
 class WorkerHandler(HydraWorker):
@@ -171,14 +177,23 @@ class WorkerHandler(HydraWorker):
       if (file_lstats.st_mtime + time_delta) < current_time:
         delete_file = True
     
+    fsize = file_lstats.st_size
+    bs = self.args['block_size']
+    block_fsize = (fsize//bs + (not not fsize%bs))*bs
+    block_512_fsize = (fsize//512 + (not not fsize%512))*512
+    self.stats['file_size_logical_scanned'] += fsize
+    self.stats['file_size_logical_512byte_block_scanned'] += block_512_fsize
+    self.stats['file_size_logical_8kbyte_block_scanned'] += block_fsize
     if delete_file:
       if self.args.get('purge'):
         os.unlink(full_path_file)
+        self.audit.info(full_path_file)
       else:
-        self.log.info('Simulate delete: %s'%full_path_file)
-      self.audit.info(full_path_file)
+        self.audit.info('Simulate delete: %s'%full_path_file)
       self.stats['deleted_files'] += 1
-      self.stats['deleted_files_size_total'] += file_lstats.st_size
+      self.stats['deleted_files_size_logical_total'] += fsize
+      self.stats['deleted_files_size_512byte_block_total'] += block_512_fsize
+      self.stats['deleted_files_size_8kbyte_block_total'] += block_fsize
     return True
     
   def handle_update_settings(self, cmd):
@@ -245,7 +260,7 @@ class ServerProcessor(HydraServer):
 
   def handle_extended_server_cmd(self, cmd):
     if cmd.get('cmd') == 'output_final_stats':
-      self.log.info("\n%s"%json.dumps(self.stats, indent=2))
+      self.log.info("\n%s"%json.dumps(self.stats, indent=2, sort_keys=True))
     return True
    
 '''
@@ -356,7 +371,11 @@ def main():
   )
   # Create main CLI parser
   AddParserOptions(parser, cli_options)
-  (options, args) = parser.parse_args(cli_options)
+  try:
+    (options, args) = parser.parse_args(cli_options)
+  except:
+    parser.print_help()
+    sys.exit(1)
   if options.server is False and options.connect is None:
     parser.print_help()
     print("You must specify running as a server or client")
@@ -371,10 +390,13 @@ def main():
   logger_config = dict(HydraUtils.LOGGING_CONFIG)
   if options.debug > 3:
     log_level = 5
+    logger_config['handlers']['default']['formatter'] = 'debug'
   elif options.debug > 2:
     log_level = 9
+    logger_config['handlers']['default']['formatter'] = 'debug'
   elif options.debug > 1:
     log_level = logging.DEBUG
+    logger_config['handlers']['default']['formatter'] = 'debug'
   elif options.debug > 0:
     log_level = logging.INFO
   else:
@@ -434,6 +456,7 @@ def main():
           'compare_atime': options.atime,
           'compare_ctime': options.ctime,
           'compare_mtime': options.mtime,
+          'block_size': DEFAULT_CONFIG['block_size'],
           'purge': options.purge,
         },
     )
@@ -449,11 +472,12 @@ def main():
       try:
         readable, _, _ = select.select([svr], [], [])
         if len(readable) > 0:
-          cmd = svr.recv()
+          msg = svr.recv()
+          cmd = msg.get('cmd')
           log.debug("UI received: %s"%cmd)
-          if cmd.get('cmd') == 'state':
-            state = cmd.get('state')
-            pstate = cmd.get('prev_state')
+          if cmd == 'state':
+            state = msg.get('state')
+            pstate = msg.get('prev_state')
             if state == 'processing':
               log.debug("Server state transition: %s -> %s"%(pstate, state))
               if pstate == 'idle':
