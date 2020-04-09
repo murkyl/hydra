@@ -586,7 +586,7 @@ class HydraServer(object):
     # If we have any unprocessed work items, send them to the workers
     self.log.debug("Distribute work, items in queue: %d"%len(self.work_queue))
     self._process_dirs()
-    # Request worker stats if required
+    # Request client stats if required
     if self.heartbeat_count%self.stats_heartbeat_interval == 0:
       self._get_client_stats()
       
