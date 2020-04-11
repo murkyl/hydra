@@ -186,8 +186,11 @@ class WorkerHandler(HydraWorker):
     self.stats['file_size_logical_8kbyte_block_scanned'] += block_fsize
     if delete_file:
       if self.args.get('purge'):
-        os.unlink(full_path_file)
-        self.audit.info(full_path_file)
+        try:
+          os.unlink(full_path_file)
+          self.audit.info(full_path_file)
+        except:
+          self.log.warn('Error delete file: %s'%full_path_file)
       else:
         self.audit.info('Simulate delete: %s'%full_path_file)
       self.stats['deleted_files'] += 1
