@@ -114,8 +114,8 @@ except ImportError:
 STATE_INIT = 'init'
 STATE_CONNECTING = 'connecting'
 STATE_IDLE = 'idle'
-STATE_PROCESSING = 'processing'
 STATE_PAUSED = 'paused'
+STATE_PROCESSING = 'processing'
 STATE_PROCESSING_PAUSED = 'processing_paused'
 STATE_SHUTDOWN = 'shutdown'
 
@@ -130,6 +130,10 @@ EVENT_RETURN_WORK = 'return_work'
 EVENT_SHUTDOWN = 'shutdown'
 EVENT_SHUTDOWN_FORCED = 'force_shutdown'
 EVENT_UPDATE_SETTINGS = 'update_settings'
+
+CMD_WORK_ITEMS = 'work_items'
+CMD_STATE = 'state'
+CMD_STATS = 'stats'
 
 HYDRA_WORKER_STATE_TABLE = {
   STATE_INIT: {
@@ -416,8 +420,7 @@ class HydraWorker(multiprocessing.Process):
           data = HydraUtils.socket_recv(s, data_len)
           if len(data) > 0:
             self.log.log(9, "Worker got data: %r"%data)
-            op = data.get('op', None)
-            self._process_state_event(op, data)
+            self._process_state_event(data.get('op', None), data)
           else:
             self.log.error("Input ready but no data received")
       # Handle exceptions
@@ -474,7 +477,7 @@ class HydraWorker(multiprocessing.Process):
         self.log.log(9, "Returning stats")
         self._return_stats()
         self.log.log(9, "Sending shutdown complete")
-        self._send_client('state', STATE_SHUTDOWN)
+        self._send_client(CMD_STATE, STATE_SHUTDOWN)
       if self.client_conn:
         self.client_conn.close()
         self.client_conn = None
@@ -549,7 +552,7 @@ class HydraWorker(multiprocessing.Process):
     """
     Fill in docstring
     """
-    for item in data.get('work_items', []):
+    for item in data.get(CMD_WORK_ITEMS, []):
       work_type = item.get('type', None)
       if work_type in ['dir', 'partial_dir']:
         self.stats['queued_dirs'] += 1
@@ -562,7 +565,7 @@ class HydraWorker(multiprocessing.Process):
     """
     Fill in docstring
     """
-    self._send_client('state', self._get_state())
+    self._send_client(CMD_STATE, self._get_state())
     
   def _return_stats(self, data=None):
     """
@@ -573,7 +576,7 @@ class HydraWorker(multiprocessing.Process):
       format = data.get('format', 'pickle')
     if format not in HydraUtils.HYDRA_OPERATION_FORMATS:
       format = 'dict'
-    self._send_client('stats', self._get_stats(format), format=format)
+    self._send_client(CMD_STATS, self._get_stats(format), format=format)
     
   def _return_work_items(self, divisor=2):
     """
@@ -602,7 +605,7 @@ class HydraWorker(multiprocessing.Process):
         elif work_type in ['file']:
           self.stats['queued_files'] -= 1
         return_items.append(work_item)
-      self._send_client('work_items', return_items)
+      self._send_client(CMD_WORK_ITEMS, return_items)
     
   def _send_client(self, op, data=None, format=None):
     """
