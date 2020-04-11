@@ -19,7 +19,7 @@ if __package__ is None:
   current_file = inspect.getfile(inspect.currentframe())
   base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
   sys.path.insert(0, base_path)
-from HydraWorker import HydraWorker
+import HydraWorker
 import HydraUtils
 
 TEST_PATH = os.path.join('test', 'data')
@@ -63,10 +63,14 @@ def create_files(path, num, size, buffer = None, buf_size = 1024*1024, prefix = 
           f.write(buffer[offset:buf_size])
           bytes_to_write -= remainder
     
-class HydraTestClassSlowFileProcess(HydraWorker):
+class HydraTestClassSlowFileProcess(HydraWorker.HydraWorker):
   def __init__(self, args={}):
     super(HydraTestClassSlowFileProcess, self).__init__(args)
     self.file_delay = 0
+    for state in [HydraWorker.STATE_IDLE, HydraWorker.STATE_PROCESSING]:
+      self._sm_add_event_handler(self.state_table, state, 'setdelay', {'a': self._h_setdelay})
+    #self.state_table[HydraWorker.STATE_IDLE]['setdelay'] = {'a': self._h_setdelay}
+    #self.state_table[HydraWorker.STATE_PROCESSING]['setdelay'] = {'a': self._h_setdelay}
     
   def setFileDelay(self, delay_in_seconds):
     self.file_delay = delay_in_seconds
@@ -101,10 +105,14 @@ class HydraTestClassSlowFileProcess(HydraWorker):
     logging.getLogger().debug("Proc file: %s"%os.path.join(dir, file))
     return True
     
-  def handle_extended_ops(self, data):
-    if data.get('op') == 'setdelay':
-      self.file_delay = data.get('payload')
-    return True
+  def _h_setdelay(self, event, data, next_state):
+    self.file_delay = data.get('payload')
+    return next_state
+
+  #def handle_extended_ops(self, data):
+  #  if data.get('op') == 'setdelay':
+  #    self.file_delay = data.get('payload')
+  #  return True
 
 class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
   def setUp(self):
@@ -149,7 +157,7 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
       
   #@unittest.skip("")
   def test_1_spawn_1_workers_and_timeout_recv(self):
-    self.worker = HydraWorker(self.worker_args)
+    self.worker = HydraWorker.HydraWorker(self.worker_args)
     self.worker.start()
     
     # Grab the initial stats before idle
@@ -160,7 +168,7 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
     data = self.worker.recv(timeout=2)
     self.assertIsInstance(data, dict)
     self.assertEqual('state', data.get('op'))
-    self.assertEqual('idle', data.get('data'))
+    self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
     
     data = self.worker.recv(timeout=2)
     self.assertEqual(data, False)
@@ -169,7 +177,7 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
   
   #@unittest.skip("")
   def test_2_spawn_1_workers_get_state_and_timeout_recv(self):
-    self.worker = HydraWorker(self.worker_args)
+    self.worker = HydraWorker.HydraWorker(self.worker_args)
     self.worker.start()
     
     # Grab the initial stats before idle
@@ -180,7 +188,7 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
     data = self.worker.recv(timeout=2)
     self.assertIsInstance(data, dict)
     self.assertEqual('state', data.get('op'))
-    self.assertEqual('idle', data.get('data'))
+    self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
     
     self.worker.send({'op': 'return_state'})
 
@@ -200,7 +208,7 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
     
     for i in range(num_workers):
       # Create pipe for client to worker communications
-      worker = HydraWorker(self.worker_args)
+      worker = HydraWorker.HydraWorker(self.worker_args)
       self.workers.append(worker)
       worker.start()
     time.sleep(sleep_seconds)
@@ -213,10 +221,10 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
       data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
       self.assertIsInstance(data, dict)
       self.assertEqual('state', data.get('op'))
-      self.assertEqual('idle', data.get('data'))
+      self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
     for i in range(num_workers):
       # Ask worker process to shutdown
-      self.workers[i].send({'op': 'shutdown'})
+      self.workers[i].send({'op': HydraWorker.EVENT_SHUTDOWN})
     for i in range(num_workers):
       data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
       self.assertIsInstance(data, dict)
@@ -234,7 +242,7 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
     num_workers = 4
     
     for i in range(num_workers):
-      worker = HydraWorker(self.worker_args)
+      worker = HydraWorker.HydraWorker(self.worker_args)
       worker.start()
       self.workers.append(worker)
       
@@ -251,8 +259,8 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
         
       for s in readable:
         data = s.recv()
-        if data.get('op') == 'state' and data.get('data') == 'idle':
-          s.send({'op': 'shutdown'})
+        if data.get('op') == 'state' and data.get('data') == HydraWorker.STATE_IDLE:
+          s.send({'op': HydraWorker.EVENT_SHUTDOWN})
         elif data.get('op') == 'state' and data.get('data') == 'shutdown':
           s.close()
           self.workers.remove(s)
@@ -354,25 +362,25 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
 
     try:
       for i in range(num_workers):
-        self.workers[i].send({'op': 'pause'})
+        self.workers[i].send({'op': HydraWorker.EVENT_PAUSE})
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('paused', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_PAUSED, data.get('data'))
 
       for i in range(num_workers):
-        workers[i].send({'op': 'proc_dir', 'dirs': [work_dirs[i]]})
-        workers[i].send({'op': 'resume'})
+        workers[i].send({'op': HydraWorker.EVENT_PROCESS_DIR, 'dirs': [work_dirs[i]]})
+        workers[i].send({'op': HydraWorker.EVENT_RESUME})
 
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('idle', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
         
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('processing', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_PROCESSING, data.get('data'))
 
       for i in range(num_workers):
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
@@ -383,11 +391,11 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('idle', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
       
       for i in range(num_workers):
         # Ask worker process to shutdown
-        self.workers[i].send({'op': 'shutdown'})
+        self.workers[i].send({'op': HydraWorker.EVENT_SHUTDOWN})
         # Verify worker process successfully shutdown
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
@@ -395,7 +403,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('shutdown', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_SHUTDOWN, data.get('data'))
         self.workers[i].close()
     except:
       pass
@@ -426,14 +434,14 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('idle', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
 
       for i in range(num_workers):
-        self.workers[i].send({'op': 'proc_dir', 'dirs': [work_dirs[i]]})
+        self.workers[i].send({'op': HydraWorker.EVENT_PROCESS_DIR, 'dirs': [work_dirs[i]]})
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('processing', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_PROCESSING, data.get('data'))
         
       for i in range(num_workers):
         for j in range(2):
@@ -444,18 +452,18 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
             self.assertEqual(1100, stats['processed_files'])
             self.assertEqual(111, stats['processed_dirs'])
             break
-          elif data.get('data') == 'idle':
+          elif data.get('data') == HydraWorker.STATE_IDLE:
             # Ask worker process to return stats
-            self.workers[i].send({'op': 'return_stats'})
+            self.workers[i].send({'op': HydraWorker.EVENT_QUERY_STATS})
         
       for i in range(num_workers):
         # Ask worker process to shutdown
-        self.workers[i].send({'op': 'shutdown'})
+        self.workers[i].send({'op': HydraWorker.EVENT_SHUTDOWN})
         # Verify worker process successfully shutdown
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('idle', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
         
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
@@ -464,7 +472,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('shutdown', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_SHUTDOWN, data.get('data'))
     finally:
       self.cleanup_workers()
 
@@ -495,28 +503,30 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('idle', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
 
       # Ask worker 0 to start processing
       logging.getLogger().debug('Asking worker 0 and 1 to start processing')
-      self.workers[0].send({'op': 'proc_dir', 'dirs': [work_dirs[0]]})
+      self.workers[0].send({'op': HydraWorker.EVENT_PROCESS_DIR, 'dirs': [work_dirs[0]]})
 
       data = self.workers[0].recv(timeout=POLL_WAIT_SECONDS)
       self.assertIsNot(data, False)
       self.assertEqual('state', data.get('op'))
-      self.assertEqual('processing', data.get('data'))
+      self.assertEqual(HydraWorker.STATE_PROCESSING, data.get('data'))
 
       # Ask worker 0 to return some work back to us
       logging.getLogger().debug('Asking worker 0 to return work')
-      self.workers[0].send({'op': 'return_work'})
+      self.workers[0].send({'op': HydraWorker.EVENT_RETURN_WORK})
       data = self.workers[0].recv(timeout=POLL_WAIT_SECONDS*2)
       self.assertIsNot(data, False)
       self.assertEqual('work_items', data.get('op', None))
-      self.workers[1].send({'op': 'proc_work', 'work_items': data.get('data')})
+      logging.getLogger().debug('Sending second worker %d work items'%len(data.get('data')))
+      self.workers[1].send({'op': HydraWorker.EVENT_PROCESS_WORK, 'work_items': data.get('data')})
 
       # Wait a small amount of time to let the workers process slowly
       #time.sleep(5)
       # Remove file processing delay to finish test faster
+      logging.getLogger().debug('Short delay to allow some processing')
       for i in range(num_workers):
         self.workers[i].send({'op': 'setdelay', 'payload': 0})
 
@@ -530,13 +540,14 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
           if done[i] is False:
             data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
             if data:
-              if data.get('op') == 'state' and data.get('data') == 'idle':
+              if data.get('op') == 'state' and data.get('data') == HydraWorker.STATE_IDLE:
+                logging.getLogger().debug('Worker %d is now idle'%i)
                 done[i] = True
 
       all_stats = []
       for i in range(num_workers):
         # Ask worker process to return stats
-        self.workers[i].send({'op': 'return_stats'})
+        self.workers[i].send({'op': HydraWorker.EVENT_QUERY_STATS})
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         stats = data['data']
@@ -549,7 +560,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
 
       for i in range(num_workers):
         # Ask worker process to shutdown
-        self.workers[i].send({'op': 'shutdown'})
+        self.workers[i].send({'op': HydraWorker.EVENT_SHUTDOWN})
         # Verify worker process successfully shutdown
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS*2)
         self.assertIsNot(data, False)
@@ -557,7 +568,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS*2)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('shutdown', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_SHUTDOWN, data.get('data'))
         self.workers[i].close()
       self.assertEqual(1100, num_files)
       self.assertEqual(111, num_dirs)
@@ -590,14 +601,14 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS)
         self.assertIsNot(data, False)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('idle', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_IDLE, data.get('data'))
 
       # Ask worker 0 to start processing
-      self.workers[0].send({'op': 'proc_dir', 'dirs': [work_dirs[0]]})
+      self.workers[0].send({'op': HydraWorker.EVENT_PROCESS_DIR, 'dirs': [work_dirs[0]]})
       data = self.workers[0].recv(timeout=POLL_WAIT_SECONDS)
       self.assertIsNot(data, False)
       self.assertEqual('state', data.get('op'))
-      self.assertEqual('processing', data.get('data'))
+      self.assertEqual(HydraWorker.STATE_PROCESSING, data.get('data'))
 
       # Ask worker 0 to return some work back to us
       self.workers[0].send({'op': 'return_work'})
@@ -607,7 +618,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
 
       for i in range(num_workers):
         # Ask worker process to shutdown
-        self.workers[i].send({'op': 'shutdown'})
+        self.workers[i].send({'op': HydraWorker.EVENT_SHUTDOWN})
         # Verify worker process successfully shutdown
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS*2)
         self.assertIsNot(data, False)
@@ -615,7 +626,7 @@ class TestHydraWorkerProcessDirectory(unittest.TestCase):
         
         data = self.workers[i].recv(timeout=POLL_WAIT_SECONDS*2)
         self.assertEqual('state', data.get('op'))
-        self.assertEqual('shutdown', data.get('data'))
+        self.assertEqual(HydraWorker.STATE_SHUTDOWN, data.get('data'))
         self.workers[i].close()
     finally:
       self.cleanup_workers()
