@@ -284,7 +284,6 @@ File audit worker handler
 '''
 class WorkerHandler(HydraWorker):
   def __init__(self, args={}):
-    super(WorkerHandler, self).__init__(args)
     self.args = dict(DEFAULT_CONFIG)
     self.args.update(args)
     self.cache = [None]*self.args.get('cache_size')
@@ -299,6 +298,7 @@ class WorkerHandler(HydraWorker):
     self.db_container_counter = 0
     self.db_collection_range = [0, 1]
     self.stats_advanced = {}
+    super(WorkerHandler, self).__init__(args)
     
     if args.get('db') and args['db'].get('db_type') != None:
       db_type = args['db']['db_type']
@@ -654,22 +654,25 @@ class ClientProcessor(HydraClient):
           add_to_per_depth(self.stats[s], set[w]['stats'][s])
         for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
           max_to_per_depth(self.stats[s], set[w]['stats'][s])
-    if self.db and self.write_cstats:
-      # Write this clients statistics to the database
-      self.stats['num_clients'] = 1
-      self.stats['num_workers'] = self.get_max_workers()
-      self.stats['time_client_processing'] = time.time() - self.start_time
-      self.stats['process_paths'] = self.args['process_paths']
-      result = self.db[self.args['cstats_table']].replace_one(
-          {'type': 'client'},
-          {
-            'type': 'client',
-            'stats': self.stats,
-            # Add any additional client wide stats to save to DB here
-            'prefix_paths': self.args['prefix_paths'],
-          },
-          upsert=True,
-      )
+    try:
+      if self.db and self.write_cstats:
+        # Write this clients statistics to the database
+        self.stats['num_clients'] = 1
+        self.stats['num_workers'] = self.get_max_workers()
+        self.stats['time_client_processing'] = time.time() - self.start_time
+        self.stats['process_paths'] = self.args['process_paths']
+        result = self.db[self.args['cstats_table']].replace_one(
+            {'type': 'client'},
+            {
+              'type': 'client',
+              'stats': self.stats,
+              # Add any additional client wide stats to save to DB here
+              'prefix_paths': self.args['prefix_paths'],
+            },
+            upsert=True,
+        )
+    except:
+      pass
 
   def consolidate_stats_db(self):
     init_stats_histogram(self.stats_advanced, self.args)
