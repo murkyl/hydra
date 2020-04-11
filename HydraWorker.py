@@ -45,26 +45,11 @@ and workers
 
 """
 
-"""
-State table
-
-<Start state> initializing
-initializing -> idle
-idle -> processing
-idle -> paused
-idle -> shutdown
-processing -> idle
-processing -> paused
-processing -> shutdown
-paused -> idle
-paused -> processing
-paused -> shutdown
-shutdown <End State>
-"""
 import os
 import sys
 import platform
 import time
+import copy
 import socket
 import select
 import struct
@@ -125,6 +110,97 @@ except ImportError:
     scandir = os
   fswalk = scandir.walk
 
+# Possible state machine states. Sub states are split using the _ character
+STATE_INIT = 'init'
+STATE_CONNECTING = 'connecting'
+STATE_IDLE = 'idle'
+STATE_PROCESSING = 'processing'
+STATE_PAUSED = 'paused'
+STATE_PROCESSING_PAUSED = 'processing_paused'
+STATE_SHUTDOWN = 'shutdown'
+
+EVENT_CONNECT = 'connect'
+EVENT_PAUSE = 'pause'
+EVENT_PROCESS_DIR = 'proc_dir'
+EVENT_PROCESS_WORK = 'proc_work'
+EVENT_QUERY_STATE = 'return_state'
+EVENT_QUERY_STATS = 'return_stats'
+EVENT_RESUME = 'resume'
+EVENT_RETURN_WORK = 'return_work'
+EVENT_SHUTDOWN = 'shutdown'
+EVENT_SHUTDOWN_FORCED = 'force_shutdown'
+EVENT_UPDATE_SETTINGS = 'update_settings'
+
+HYDRA_WORKER_STATE_TABLE = {
+  STATE_INIT: {
+      EVENT_CONNECT:          {'a': '_h_connect',             'ns': STATE_IDLE},
+  },
+  STATE_IDLE: {
+      #EVENT_CONNECT:          {'a': '_h_',                    'ns': None},
+      EVENT_PAUSE:            {'a': '_h_idle_pause',          'ns': STATE_PAUSED},
+      EVENT_PROCESS_DIR:      {'a': '_h_proc_dir',            'ns': STATE_PROCESSING},
+      EVENT_PROCESS_WORK:     {'a': '_h_proc_work',           'ns': STATE_PROCESSING},
+      EVENT_QUERY_STATE:      {'a': '_h_query_state',         'ns': None},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      #EVENT_RESUME:           {'a': '_h_',                    'ns': None},
+      #EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
+      EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
+      EVENT_SHUTDOWN_FORCED:  {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
+      EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
+  },
+  STATE_PROCESSING: {
+      #EVENT_CONNECT:          {'a': '_h_',                    'ns': None},
+      EVENT_PAUSE:            {'a': '_h_processing_pause',    'ns': STATE_PROCESSING_PAUSED},
+      EVENT_PROCESS_DIR:      {'a': '_h_proc_dir',            'ns': None},
+      EVENT_PROCESS_WORK:     {'a': '_h_proc_work',           'ns': None},
+      EVENT_QUERY_STATE:      {'a': '_h_query_state',         'ns': None},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      #EVENT_RESUME:           {'a': '_h_',                    'ns': None},
+      EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
+      EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
+      EVENT_SHUTDOWN_FORCED:  {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
+      EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
+  },
+  STATE_PROCESSING_PAUSED: {
+      #EVENT_CONNECT:          {'a': '_h_',                    'ns': None},
+      EVENT_PAUSE:            {'a': '_h_no_op',               'ns': None},
+      EVENT_PROCESS_DIR:      {'a': '_h_proc_dir',            'ns': None},
+      EVENT_PROCESS_WORK:     {'a': '_h_proc_work',           'ns': None},
+      EVENT_QUERY_STATE:      {'a': '_h_query_state',         'ns': None},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      EVENT_RESUME:           {'a': '_h_resume',              'ns': STATE_PROCESSING},
+      EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
+      EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
+      EVENT_SHUTDOWN_FORCED:  {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
+      EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
+  },
+  STATE_PAUSED: {
+      #EVENT_CONNECT:          {'a': '_h_',                    'ns': None},
+      EVENT_PAUSE:            {'a': '_h_no_op',               'ns': None},
+      EVENT_PROCESS_DIR:      {'a': '_h_proc_dir',            'ns': None},
+      EVENT_PROCESS_WORK:     {'a': '_h_proc_work',           'ns': None},
+      EVENT_QUERY_STATE:      {'a': '_h_query_state',         'ns': None},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      EVENT_RESUME:           {'a': '_h_resume',              'ns': STATE_IDLE},
+      EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
+      EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
+      EVENT_SHUTDOWN_FORCED:  {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
+      EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
+  },
+  STATE_SHUTDOWN: {
+      #EVENT_CONNECT:          {'a': '_h_',                    'ns': None},
+      #EVENT_PAUSE:            {'a': '_h_no_op',               'ns': None},
+      #EVENT_PROCESS_DIR:      {'a': '_h_no_op',               'ns': None},
+      #EVENT_PROCESS_WORK:     {'a': '_h_no_op',               'ns': None},
+      EVENT_QUERY_STATE:      {'a': '_h_query_state',         'ns': None},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      #EVENT_RESUME:           {'a': '_h_no_op',               'ns': None},
+      EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
+      EVENT_SHUTDOWN:         {'a': '_h_no_op',               'ns': None},
+      EVENT_SHUTDOWN_FORCED:  {'a': '_h_no_op',               'ns': None},
+      EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
+  },
+}
 
 class HydraWorker(multiprocessing.Process):
   def __init__(self, args={}):
@@ -133,7 +209,7 @@ class HydraWorker(multiprocessing.Process):
     """
     super(HydraWorker, self).__init__()
     self.log = logging.getLogger(__name__)
-    self.args = dict(args)
+    self.args = copy.deepcopy(args)
     self.fswalk = fswalk
     self.loopback_addr = args.get('loopback_addr', HydraUtils.LOOPBACK_ADDR)
     self.loopback_port = args.get('loopback_port', HydraUtils.LOOPBACK_PORT)
@@ -142,9 +218,11 @@ class HydraWorker(multiprocessing.Process):
     self.work_queue = deque()           # Queue used to hold work items
     self.inputs = []                    # Sockets from which we expect to read from through a select call
     self.stats = {}
-    self.state = 'initializing'
+    self.state = STATE_INIT
+    self.state_table = {}
     self.init_stats()
-    self._connect_client()
+    self._init_state_table(HYDRA_WORKER_STATE_TABLE)
+    self._process_state_event(EVENT_CONNECT)
     
   def filter_subdirectories(self, root, dirs, files):
     """
@@ -234,7 +312,7 @@ class HydraWorker(multiprocessing.Process):
     Fill in docstring
     """
     try:
-      self.send({'op': 'shutdown'})
+      self.send({'op': STATE_SHUTDOWN})
     except:
       pass
     
@@ -261,7 +339,7 @@ class HydraWorker(multiprocessing.Process):
     """
     for s in HydraUtils.BASIC_STATS:
       self.stats[s] = 0
-    
+  
   def recv(self, timeout=-1, convert=True):
     """
     A HydraClient can use this method to read data from the worker
@@ -317,7 +395,7 @@ class HydraWorker(multiprocessing.Process):
     self.log.debug("PID: %d, Process name: %s"%(self.pid, self.name))
     wait_count = 0
     forced_shutdown = False
-    while self._get_state() != 'shutdown':
+    while self._get_state() != STATE_SHUTDOWN:
       readable = []
       exceptional = []
       try:
@@ -339,33 +417,7 @@ class HydraWorker(multiprocessing.Process):
           if len(data) > 0:
             self.log.log(9, "Worker got data: %r"%data)
             op = data.get('op', None)
-            if op == 'proc_dir':
-              self._queue_dirs(data)
-            elif op == 'proc_work':
-              self._queue_work(data)
-            elif op == 'return_work':
-              self._return_work_items()
-            elif op == 'return_stats':
-              self._return_stats(data.get('data', None))
-            elif op == 'return_state':
-              self._return_state()
-            elif op == 'pause':
-              self._set_state('paused')
-            elif op == 'resume':
-              self._set_state('idle')
-            elif op == 'shutdown':
-              self.log.debug("Shutdown request received for (%s)"%self.name)
-              self._set_state('shutdown')
-              continue
-            elif op == 'force_shutdown':
-              forced_shutdown = True
-              self._set_state('shutdown')
-              continue
-            elif op == 'update_settings':
-              self.handle_update_settings(data)
-            else:
-              if not self.handle_extended_ops(data):
-                self.log.warn("Unknown command received: %r"%data)
+            self._process_state_event(op, data)
           else:
             self.log.error("Input ready but no data received")
       # Handle exceptions
@@ -385,9 +437,9 @@ class HydraWorker(multiprocessing.Process):
       # counter which slows down the polling interval used by the select
       # statement above. This is done to prevent the poll from consuming too
       # many resources when it is idle for a long period of time.
-      if self._get_state() == 'shutdown':
+      if self._get_state() == STATE_SHUTDOWN:
         break
-      elif self._get_state() == 'paused':
+      elif self._get_state() == STATE_PAUSED:
         if wait_count < HydraUtils.LONG_WAIT_THRESHOLD:
           wait_count += HydraUtils.SHORT_WAIT_TIMEOUT
       else:
@@ -400,7 +452,7 @@ class HydraWorker(multiprocessing.Process):
             if wait_count < HydraUtils.LONG_WAIT_THRESHOLD:
               wait_count += HydraUtils.SHORT_WAIT_TIMEOUT
         except KeyboardInterrupt:
-          self._set_state('shutdown')
+          self._set_state(STATE_SHUTDOWN)
           break
         except Exception as e:
           self.log.exception(e)
@@ -422,7 +474,7 @@ class HydraWorker(multiprocessing.Process):
         self.log.log(9, "Returning stats")
         self._return_stats()
         self.log.log(9, "Sending shutdown complete")
-        self._send_client('state', 'shutdown')
+        self._send_client('state', STATE_SHUTDOWN)
       if self.client_conn:
         self.client_conn.close()
         self.client_conn = None
@@ -433,6 +485,7 @@ class HydraWorker(multiprocessing.Process):
       self.log.exception(e)
   
   def _connect_client(self):
+    self.log.debug('Connecting to loopback client')
     # Create temporary socket to listen for client<->worker connection
     listen_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listen_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -441,8 +494,11 @@ class HydraWorker(multiprocessing.Process):
     listen_sock.listen(1)
     # Create connection between client<->worker and exchange secret
     self.worker_conn = socket.create_connection((self.loopback_addr, self.loopback_port))
+    if not self.worker_conn:
+      self.log.critical('Unable to create loopback socket connection')
     self.worker_conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
     self.client_conn, _ = listen_sock.accept()
+    self.log.debug('Connection complete')
     # Close the listening socket as we no longer require it
     listen_sock.close()
     secret = HydraUtils.create_uuid_secret()
@@ -472,18 +528,6 @@ class HydraWorker(multiprocessing.Process):
   def _init_process_logging(self):
     if self.args.get('logger_cfg'):
       logging.config.dictConfig(self.args['logger_cfg'])
-    '''
-    # Having a socket server overrides any configuration 
-    if self.args.get('log_addr') and self.args.get('log_port'):
-      sh = HydraUtils.SecureSocketHandler(
-          self.args.get('log_addr'),
-          self.args.get('log_port'),
-          self.args.get('log_secret')
-      )
-      self.log.setLevel(self.args.get('log_level', logging.WARN))
-      root_logger = logging.getLogger()
-      root_logger.handlers = [sh]
-    '''
         
   def _queue_dirs(self, data):
     """
@@ -537,6 +581,7 @@ class HydraWorker(multiprocessing.Process):
     """
     # Use simple algorithm by returning roughly half of our work items
     return_queue = len(self.work_queue)//divisor
+    self.log.debug('Returning %d work items to client'%return_queue)
     if return_queue > 0:
       return_items = []
       for i in range(return_queue):
@@ -570,19 +615,6 @@ class HydraWorker(multiprocessing.Process):
       msg = {'op': op, 'id': self.name, 'pid': self.pid, 'data': data, 'format': format}
     HydraUtils.socket_send(self.worker_conn, msg)
       
-  def _set_state(self, state):
-    """
-    Fill in docstring
-    """
-    old_state = self.state
-    if old_state != state:
-      if state == 'idle' or state == 'shutdown':
-        self._return_stats()
-      self.state = state
-      self._return_state()
-      self.log.debug('Worker state change: %s ==> %s'%(old_state, state))
-    return old_state
-    
   def _process_work_queue(self):
     """
     Fill in docstring
@@ -595,11 +627,11 @@ class HydraWorker(multiprocessing.Process):
     except:
       # No work items
       end_time = time.time()
-      self._set_state('idle')
+      self._set_state(STATE_IDLE)
       return False
     work_type = work_item.get('type', None)
     self.log.log(9, "Work type: %s"%work_type)
-    self._set_state('processing')
+    self._set_state(STATE_PROCESSING)
     if work_type == 'dir':
       work_dir = work_item.get('path')
       self.log.log(9, "Processing directory: %s"%work_dir)
@@ -695,3 +727,100 @@ class HydraWorker(multiprocessing.Process):
       self.log.error("Unknown work type found in work queue. Queued work item: %r"%work_item)
     end_time = time.time()
     return True
+
+  # State machine methods
+  def _init_state_table(self, state_dict):
+    """
+    Fill in docstring
+    """
+    for state in state_dict.keys():
+      self._sm_copy_state(self.state_table, state, state_dict[state])
+    
+  def _sm_copy_state(self, state_table, state, ev_handlers):
+    for event in ev_handlers.keys():
+      self._sm_add_event_handler(state_table, state, event, ev_handlers[event])
+    
+  def _sm_add_event_handler(self, state_table, state, event, handler):
+    if not state in state_table:
+      state_table[state] = {}
+    sm_state = state_table[state]
+    sm_state[event] = dict(handler)
+    if isinstance(sm_state[event].get('a'), str):
+      # Convert any string state handlers to actual bound methods
+      sm_state[event]['a'] = getattr(self, sm_state[event].get('a'))
+    
+  def _process_state_event(self, event, data=None):
+    """
+    Fill in docstring
+    """
+    table = self.state_table[self.state]
+    handler = table.get(event)
+    if handler:
+      self.log.debug("Handling event '%s' => '%s' with '%s'"%(event, self.state, handler['a']))
+      next_state = handler['a'](event, data, handler.get('ns'))
+      self._set_state(next_state or handler.get('ns'))
+    else:
+      if not self.handle_extended_ops(data):
+        self.log.critical("Unhandled event (%s) received in '%s' state. Handlers:\n%s"%(event, self.state, table))
+    
+  def _set_state(self, state):
+    """
+    Fill in docstring
+    """
+    if state == None:
+      self.log.debug('No state transition')
+      return
+    old_state = self.state
+    if old_state != state:
+      if state == STATE_IDLE or state == STATE_SHUTDOWN:
+        self._return_stats()
+      self.state = state
+      self._return_state()
+      self.log.debug('Worker state change: %s ==> %s'%(old_state, state))
+    return old_state
+    
+  def _h_no_op(self, event, data, next_state):
+    return next_state
+
+  def _h_connect(self, event, data, next_state):
+    """
+    Fill in docstring
+    """
+    self._connect_client()
+    return next_state
+    
+  def _h_idle_pause(self, event, data, next_state):
+    return next_state
+    
+  def _h_proc_dir(self, event, data, next_state):
+    self._queue_dirs(data)
+    return next_state
+
+  def _h_proc_work(self, event, data, next_state):
+    self._queue_work(data)
+    return next_state
+
+  def _h_processing_pause(self, event, data, next_state):
+    return next_state
+    
+  def _h_query_state(self, event, data, next_state):
+    self._return_state()
+    return next_state
+
+  def _h_query_stats(self, event, data, next_state):
+    self._return_stats(data.get('data', None))
+    return next_state
+    
+  def _h_resume(self, event, data, next_state):
+    return next_state
+
+  def _h_return_work(self, event, data, next_state):
+    self._return_work_items()
+    return next_state
+    
+  def _h_shutdown(self, event, data, next_state):
+    return next_state
+
+  def _h_update_settings(self, event, data, next_state):
+    self.handle_update_settings(data)
+    return next_state
