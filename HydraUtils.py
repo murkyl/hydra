@@ -141,10 +141,10 @@ LOGGING_CONFIG = {
   'disable_existing_loggers': False,
   'formatters': {
     'standard': {
-      'format': '%(asctime)s [%(levelname)s] %(name)s - %(process)d : %(message)s',
+      'format': '%(asctime)s [%(levelname)8s] %(name)s - %(process)d : %(message)s',
     },
     'debug': {
-      'format': '%(asctime)s [%(levelname)s] %(name)s [%(funcName)s (%(lineno)d)] - %(process)d : %(message)s',
+      'format': '%(asctime)s [%(levelname)8s] %(name)s [%(funcName)s (%(lineno)d)] - %(process)d : %(message)s',
     },
     'message': {
       'format': '%(message)s',

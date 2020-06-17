@@ -44,6 +44,91 @@ import HydraClient
 import HydraWorker
 import HydraUtils
 
+# Possible state machine states. Sub states are split using the _ character
+STATE_IDLE = 'idle'
+STATE_INIT = 'init'
+STATE_PAUSED = 'paused'
+STATE_PROCESSING = 'processing'
+STATE_SHUTDOWN = 'shutdown'
+STATE_SHUTDOWN_PENDING = 'shutdown_pending'
+
+EVENT_CLIENT_CONNECTED = 'client_connected'
+EVENT_CLIENT_REQ_WORK = HydraClient.CMD_CLIENT_REQUEST_WORK
+EVENT_CLIENT_STATE = HydraClient.CMD_CLIENT_STATE
+EVENT_CLIENT_STATS = HydraClient.CMD_CLIENT_STATS
+EVENT_CLIENT_WORK = HydraClient.CMD_CLIENT_WORK
+EVENT_HEARTBEAT = 'heartbeat'
+EVENT_INIT_COMPLETE = 'init_complete'
+EVENT_PAUSE = 'pause'
+EVENT_QUERY_STATS = 'stats'
+EVENT_RESUME = 'resume'
+EVENT_SHUTDOWN = 'shutdown'
+EVENT_SHUTDOWN_COMPLETE = 'shutdown_complete'
+EVENT_SUBMIT_WORK = 'submit_work'
+EVENT_UPDATE_SETTINGS = 'update_settings'
+
+# Commands sent from the server to the UI
+CMD_SVR_STATE = 'state'
+CMD_SVR_STATS = 'stats'
+CMD_SVR_STATS_INDIVIDUAL = 'stats_individual'
+
+HYDRA_SERVER_STATE_TABLE = {
+  STATE_INIT: {
+      EVENT_HEARTBEAT:        {'a': '_h_heartbeat',           'ns': None},
+      EVENT_INIT_COMPLETE:    {'a': '_h_no_op',               'ns': STATE_IDLE},
+      EVENT_SHUTDOWN:         {'a': '_h_no_op',               'ns': STATE_SHUTDOWN_PENDING},
+  },
+  STATE_IDLE: {
+      EVENT_CLIENT_CONNECTED: {'a': '_h_client_connect',      'ns': None},
+      EVENT_CLIENT_REQ_WORK:  {'a': '_h_client_req_work',     'ns': None},
+      EVENT_CLIENT_STATE:     {'a': '_h_client_state',        'ns': None},
+      EVENT_CLIENT_STATS:     {'a': '_h_client_stats',        'ns': None},
+      EVENT_CLIENT_WORK:      {'a': '_h_client_work',         'ns': None},
+      EVENT_HEARTBEAT:        {'a': '_h_heartbeat',           'ns': None},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      EVENT_SUBMIT_WORK:      {'a': '_h_submit_work',         'ns': STATE_PROCESSING},
+      EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN_PENDING},
+      EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
+  },
+  STATE_PAUSED: {
+      EVENT_CLIENT_CONNECTED: {'a': '_h_client_connect',      'ns': None},
+      EVENT_CLIENT_REQ_WORK:  {'a': '_h_client_req_work',     'ns': None},
+      EVENT_CLIENT_STATE:     {'a': '_h_client_state',        'ns': None},
+      EVENT_CLIENT_STATS:     {'a': '_h_client_stats',        'ns': None},
+      EVENT_CLIENT_WORK:      {'a': '_h_client_work',         'ns': None},
+      EVENT_HEARTBEAT:        {'a': '_h_heartbeat',           'ns': None},
+      EVENT_RESUME:           {'a': '_h_no_op',               'ns': STATE_PROCESSING},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      EVENT_SUBMIT_WORK:      {'a': '_h_submit_work',         'ns': None},
+      EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN_PENDING},
+      EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
+  },
+  STATE_PROCESSING: {
+      EVENT_CLIENT_CONNECTED: {'a': '_h_client_connect',      'ns': None},
+      EVENT_CLIENT_REQ_WORK:  {'a': '_h_client_req_work',     'ns': None},
+      EVENT_CLIENT_STATE:     {'a': '_h_client_state',        'ns': None},
+      EVENT_CLIENT_STATS:     {'a': '_h_client_stats',        'ns': None},
+      EVENT_CLIENT_WORK:      {'a': '_h_client_work',         'ns': None},
+      EVENT_HEARTBEAT:        {'a': '_h_heartbeat',           'ns': None},
+      EVENT_PAUSE:            {'a': '_h_no_op',               'ns': STATE_PAUSED},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      EVENT_SUBMIT_WORK:      {'a': '_h_submit_work',         'ns': None},
+      EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN_PENDING},
+      EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
+  },
+  STATE_SHUTDOWN: {
+      EVENT_HEARTBEAT:        {'a': '_h_heartbeat',           'ns': None},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      EVENT_SHUTDOWN_COMPLETE:{'a': '_h_no_op',               'ns': None},
+  },
+  STATE_SHUTDOWN_PENDING: {
+      EVENT_HEARTBEAT:        {'a': '_h_heartbeat',           'ns': None},
+      EVENT_CLIENT_STATE:     {'a': '_h_client_state',        'ns': None},
+      EVENT_CLIENT_STATS:     {'a': '_h_client_stats',        'ns': None},
+      EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
+      EVENT_SHUTDOWN_COMPLETE:{'a': '_h_no_op',               'ns': STATE_SHUTDOWN},
+  },
+}
 
 class HydraServer(object):
   def __init__(self, args={}):
@@ -64,10 +149,12 @@ class HydraServer(object):
     self.clients = {}                 # Connected client list
     self.shutdown_clients = {}        # List of clients that have been shutdown. Used for statistics
     self.stats = {}
-    self.state = 'initializing'
+    self.state = STATE_INIT
+    self.state_table = {}
+    self.event_queue = []
     self.work_queue = deque()
-    self.process_paths = []
     self.init_stats(self.stats)
+    self._init_state_table(HYDRA_SERVER_STATE_TABLE)
     
     # Variables dealing with server and client communication
     self.server = None
@@ -174,7 +261,6 @@ class HydraServer(object):
     data = HydraUtils.socket_recv(self.ui_side_conn, data_len)
     return data
     
-    
   def send(self, msg):
     """
     Fill in docstring
@@ -188,7 +274,7 @@ class HydraServer(object):
     
   def send_all_clients_command(self, cmd):
     for c in self.clients:
-      send_client_command(c, cmd)
+      self.send_client_command(c, cmd)
     
   def send_client_command(self, client, cmd):
     """
@@ -214,12 +300,11 @@ class HydraServer(object):
     """
     Fill in docstring
     """
-    if not self.server:
-      self._setup_server()
-  
     idle_count = 0
     start_time = time.time()
-    while not self.state == 'shutdown':
+    if not self.server:
+      self._setup_server()
+    while not (self.state == STATE_SHUTDOWN):
       readable = []
       exceptional = []
       try:
@@ -231,9 +316,9 @@ class HydraServer(object):
           idle_count = idle_count + 1
         else:
           idle_count = 0
-        if (time.time() - start_time >= self.heartbeat_count*self.heartbeat_interval):
+        if (time.time() - start_time) >= (self.heartbeat_count*self.heartbeat_interval):
           self.heartbeat_count += 1
-          self._heartbeat(idle_count)
+          self.event_queue.append({'c': EVENT_HEARTBEAT, 'd': {'idle_count': idle_count, 'hb_count': self.heartbeat_count}})
       except KeyboardInterrupt:
         self.log.debug("Caught keyboard interrupt waiting for event")
         self._shutdown(type='immediate')
@@ -249,47 +334,76 @@ class HydraServer(object):
               self.inputs.remove(i)
             except:
               self.log.error("Unable to remove handle from select: %s"%i)
-              self._shutdown(type='immediate')
+              self._shutdown()
 
       # Handle inputs
       for s in readable:
-        if s is self.server:
-          self._setup_client()
-        elif s is self.svr_side_conn:
-          # Command received from the UI
-          msg_size = s.recv(4)
-          if len(msg_size) != 4:
-            continue
-          data_len = struct.unpack('!L', msg_size)[0]
-          data = HydraUtils.socket_recv(s, data_len)
-          self._process_command(data)
-        else:
-          # Command received from a client
-          try:
-            self.log.log(9, "Got cmd from client: %s"%s.fileno())
-            msg_size = s.recv(4)
-            if len(msg_size) != 4:
+        try:
+          if s is self.server:
+            self.event_queue.append({'c': EVENT_CLIENT_CONNECTED, 'd': s})
+          elif s is self.svr_side_conn:
+            # Command received from the UI
+            try:
+              msg_size = s.recv(4)
+              if len(msg_size) != 4:
+                self.log.debug("Closing server handle due to EOF of command stream: %r"%s)
+                self._shutdown()
+                continue
+              data_len = struct.unpack('!L', msg_size)[0]
+              data = HydraUtils.socket_recv(s, data_len)
+              self.event_queue.append({'c': data.get('cmd'), 'd': data})
+            except EOFError as eof:
+              self.log.debug("Closing UI handle due to EOF of command stream: %r"%s)
+              self._shutdown()
+            except socket.error as serr:
+              if serr.errno != errno.ECONNRESET:
+                raise
+              self.log.debug("Closing UI handle due to EOF of command stream: %r"%s)
+              self._shutdown()
+            except Exception:
+              self.log.exception("Exception encountered during command processing.")
+              self._shutdown()
+          else:
+            # Command received from a client
+            try:
+              self.log.log(9, "Got cmd from client: %s"%s.fileno())
+              msg_size = s.recv(4)
+              if len(msg_size) != 4:
+                self._cleanup_client(s)
+                continue
+              data_len = struct.unpack('!L', msg_size)[0]
+              data = HydraUtils.socket_recv(s, data_len)
+              self.event_queue.append({'c': data.get('cmd'), 'd': {'cmd': data, 'id': s}})
+            except EOFError as eof:
+              self.log.debug("Attempted to read closed socket: %s"%s)
               self._cleanup_client(s)
-              continue
-            data_len = struct.unpack('!L', msg_size)[0]
-            data = HydraUtils.socket_recv(s, data_len)
-            self._process_client_command(s, data)
-          except EOFError as eof:
-            self.log.debug("Attempted to read closed socket: %s"%s)
-            self._cleanup_client(s)
-          except socket.error as serr:
-            if serr.errno != errno.ECONNRESET:
-              raise
-            self._cleanup_client(s)
-          except Exception as e:
-            self.log.exception(e)
-            self._cleanup_client(s)
+            except socket.error as serr:
+              if serr.errno != errno.ECONNRESET:
+                raise
+              self._cleanup_client(s)
+            except Exception as e:
+              self.log.exception(e)
+              self._cleanup_client(s)
+        except Exception as e:
+          self.log.exception("Unhandled exception processing received cmd")
+          raise(e)
         
       # Handle exceptions
       for s in exceptional:
         self.log.error('Handling exceptional condition for %r'%s)
         if s is self.server:
           self._shutdown(type='immediate')
+          break
+      
+      # Process all items in the event_queue. Reset the current event queue
+      # and set it to a new empty array in case handlers requeue events
+      cur_queue = self.event_queue
+      self.event_queue = []
+      for entry in cur_queue:
+        try:
+          self._process_state_event(entry['c'], entry.get('d'))
+        except Exception as e:
+          self.log.exception(e)
           break
     self.log.debug("Server exiting")
   
@@ -313,9 +427,8 @@ class HydraServer(object):
     if security != secret:
       self.log.warn("Invalid secret exchange for socket connection!")
     self.inputs.append(self.svr_side_conn)
-    self._send_ui_stats()
   
-  def _setup_client(self):
+  def _connect_client(self):
     """
     Fill in docstring
     """
@@ -332,21 +445,25 @@ class HydraServer(object):
     self.init_stats(client_obj)
     self.clients[connection] = client_obj
     self.num_clients += 1
-    self.handle_client_connected(connection)
+    return(client_obj)
 
-  def _process_client_state(self, client, cmd):
+  def _process_client_state(self, client, state):
     """
     Fill in docstring
     """
     old_state = self.clients[client]['state']
-    state = cmd.get('state')
+    if old_state == state:
+      self.log.debug("No state change for client %s in state: %s"%(client.fileno(), state))
+      return state
     self.clients[client]['state'] = state
     self.log.debug("Client %s state change %s -> %s"%(client.fileno(), old_state, state))
-    if state == 'shutdown':
+    if state == HydraClient.STATE_SHUTDOWN:
       self._cleanup_client(client)
-    if (old_state != 'idle' and state == 'idle'):
-      self._process_dirs()
-    self._update_server_state()
+      if len(self.clients) < 1:
+        if self.state == STATE_SHUTDOWN_PENDING:
+          self.event_queue.append({'c': EVENT_SHUTDOWN_COMPLETE, 'd': None})
+        else:
+          self.event_queue.append({'c': EVENT_SHUTDOWN, 'd': None})
     return old_state
     
   def _process_returned_work(self, cmd):
@@ -368,24 +485,6 @@ class HydraServer(object):
     self.clients[client]['stats'] = cmd.get('stats')
     self.last_client_stat_update = time.time()
       
-  def _process_client_command(self, client, cmd):
-    """
-    Fill in docstring
-    """
-    if not 'cmd' in cmd:
-      self.log.error("Unknown command format received from server: %r"%cmd)
-      return
-    command = cmd.get('cmd')
-    if command == 'state':
-      self._process_client_state(client, cmd)
-    elif command == 'work_items':
-      self._process_returned_work(cmd)
-    elif command == 'stats':
-      self._process_client_stats(client, cmd)
-    else:
-      if not self.handle_extended_client_cmd(client, cmd):
-        self.log.warn("Unhandled client command: %s"%cmd)
-  
   def _cleanup_client(self, client):
     """
     Fill in docstring
@@ -408,8 +507,8 @@ class HydraServer(object):
     """
     Fill in docstring
     """
-    self.send_client_command(client, {'cmd': 'shutdown'})
-    self.log.debug("Shutdown command sent to: :%s"%client)
+    self.send_client_command(client, {'op': HydraClient.EVENT_SHUTDOWN})
+    self.log.debug("Shutdown command sent to: %s"%client)
     
   def _queue_work_paths(self, paths):
     """
@@ -422,26 +521,43 @@ class HydraServer(object):
         continue
       self.work_queue.append({'type': 'dir', 'path': path})
   
-  def _process_dirs(self):
+  def _process_dirs(self, client_key=None):
     """
     Fill in docstring
     """
-    clients_sent_work = {}
     for i in range(self.dirs_per_idle_client):
       for k in self.clients.keys():
-        if self.clients.get(k, {})['state'] == 'idle':
+        if self.clients.get(k, {}).get('state') in [HydraClient.STATE_PROCESSING_WAITING, HydraClient.STATE_IDLE_WAITING] or k == client_key:
           try:
             work_item = self.work_queue.popleft()
           except:
             self.log.debug("No directories queued for processing. Search for idle clients stopped")
             return
-          self.log.debug("Sending idle client (%s) directory: %s"%(k.fileno(), work_item['path']))
-          self.send_client_command(k, {'cmd': 'submit_work', 'paths': [work_item['path']]})
-          clients_sent_work[k] = True
-    # Semi-hack to track the fact we have sent work to an idle client 
-    for k in clients_sent_work.keys():
-      self.log.debug("Setting client (%s) to idle_queued_work"%k.fileno())
-      self.clients[k]['state'] = 'idle_queued_work'
+          self.log.debug("Sending waiting client (%s) directory: %s"%(k.fileno(), work_item['path']))
+          self.send_client_command(k, {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [work_item['path']]})
+          self._process_client_state(k, 'queued_work')
+  
+  def _process_waiting_client(self):
+    """
+    """
+    active_clients = []
+    idle_clients = []
+    other_clients = []
+    for k in self.clients.keys():
+      client_state = self.clients.get(k, {}).get('state')
+      if client_state in [HydraClient.STATE_PROCESSING, HydraClient.STATE_PROCESSING_PAUSED]:
+        active_clients.append(k)
+      elif client_state in [HydraClient.STATE_IDLE, HydraClient.STATE_IDLE_WAITING]:
+        idle_clients.append(k)
+      else:
+        other_clients.append(k)
+    if len(active_clients) == 0:
+      self.log.debug("No active clients. Send NO_WORK to all clients")
+      self.send_all_clients_command({'op': HydraClient.EVENT_NO_WORK})
+      if self.state == STATE_PROCESSING and len(other_clients) == 0:
+        self._set_state(STATE_IDLE)
+    else:
+      self._get_client_work_items()
     
   def _send_ui(self, msg, flush=True):
     """
@@ -450,30 +566,56 @@ class HydraServer(object):
     self.log.log(5, "Sending to UI")
     HydraUtils.socket_send(self.svr_side_conn, msg)
       
-  def _send_ui_stats(self, cmd={}):
+  def _send_ui_stats(self, type='normal'):
     """
     Fill in docstring
     """
     send_stats = self.consolidate_stats()
-    if cmd.get('data', 'simple') == 'simple':
+    if type == 'normal':
       self.log.log(9, 'Sending UI consolidate stats: %s'%send_stats)
-      self._send_ui({'cmd': 'stats', 'stats': send_stats})
-    elif cmd.get('data') == 'individual_clients':
+      self._send_ui({'cmd': CMD_SVR_STATS, 'stats': send_stats})
+    elif type == 'individual':
       for set in [self.clients, self.shutdown_clients]:
         for c in set:
           if not set[c]['stats']:
             continue
           self.log.log(9, 'Sending UI stats for client %s: %s'%(set[c]['addr'], set[c]['stats']))
-          self._send_ui({'cmd': 'stats_individual_clients', 'client': set[c]['addr'], 'stats': set[c]['stats']})
+          self._send_ui({'cmd': CMD_SVR_STATS_INDIVIDUAL, 'client': set[c]['addr'], 'stats': set[c]['stats']})
     
   def _get_client_stats(self):
     """
     Fill in docstring
     """
     self.log.info('Server sending statistics request to clients')
-    cmd = {'cmd': 'return_stats'}
+    cmd = {'cmd': HydraClient.EVENT_QUERY_STATS}
     for c in self.clients:
       self.send_client_command(c, cmd)
+   
+  def _get_client_idle_active(self):
+    active_clients = []
+    idle_clients = []
+    for k in self.clients.keys():
+      client_state = self.clients.get(k, {}).get('state')
+      if client_state in [HydraClient.STATE_PROCESSING, HydraClient.STATE_PROCESSING_PAUSED]:
+        active_clients.append(k)
+      else:
+        idle_clients.append(k)
+    return idle_clients, active_clients
+      
+  def _get_client_work_items(self, forced=False):
+    # Check if we have idle clients. If we do query any active clients and have
+    # them return work items
+    try:
+      self.log.debug("Checking for idle clients")
+      idle_clients, active_clients = self._get_client_idle_active()
+      if len(self.work_queue) < len(idle_clients) or forced:
+        for c in active_clients:
+          self.log.debug("Requesting active client to return work: %s"%c)
+          self.send_client_command(c, {'op': HydraClient.EVENT_RETURN_WORK})
+      else:
+        self.log.debug("Existing work queue items (%d) sufficient to send to idle clients (%d)"%(len(self.work_queue), len(idle_clients)))
+    except Exception as e:
+      self.log.exception(e)
     
   def _setup_server(self):
     """
@@ -486,71 +628,8 @@ class HydraServer(object):
       self.server_listen_port = self.server.getsockname()[1]
     self.server.listen(10)
     self.inputs.append(self.server)
-    self._set_server_state('idle')
+    self.event_queue.insert(0, {'c': EVENT_INIT_COMPLETE, 'd': None})
     
-  def _set_server_state(self, next_state):
-    """
-    Fill in docstring
-    """
-    old_state = self.state
-    if old_state == 'shutdown_pending' or old_state == 'shutdown':
-      if next_state != 'shutdown_pending' and next_state != 'shutdown':
-        self.log.debug("Cannot change state out of shutdown pending or shutdown to: %s"%next_state)
-        next_state = self.state
-    self.state = next_state
-    if (old_state != next_state):
-      self.log.debug("Server state change %s -> %s"%(old_state, next_state))
-      self._send_ui({'cmd': 'state', 'state': self.state, 'prev_state': old_state})
-    return old_state
-
-  def _update_server_state(self):
-    """
-    Current possible states:
-      initializing
-      idle
-      processing
-      shutdown_pending
-      shutdown
-    """
-    old_state = self.state
-    next_state = self.state
-    idle = 0
-    not_idle = 0
-    shutdown = 0
-    queued_work = len(self.work_queue)
-    for c in self.clients:
-      c_state = self.clients[c]['state']
-      if c_state in ['initializing', 'connected', 'idle']:
-        idle += 1
-      elif c_state in ['shutdown', 'shutdown_pending']:
-        shutdown += 1
-      else: # ['processing']
-        not_idle += 1
-    self.log.debug("Clients Idle/Proc/Shutdown/Total: %d/%d/%d/%d, Work Q: %d"%(idle, not_idle, shutdown, self.num_clients, queued_work))
-    
-    if self.state in ['shutdown_pending', 'shutdown']:
-      if self.num_clients == 0:
-        next_state = 'shutdown'
-    else:
-      if not_idle > 0:
-        # idle -> processing, processing -> processing
-        next_state = 'processing'
-      elif queued_work == 0:
-        next_state = 'idle'
-      else:
-        self.log.debug('Server requires no state change')
-        
-    if old_state != next_state:
-      if next_state == 'shutdown':
-        self._send_ui_stats()
-        if self.log.level >= logging.DEBUG:
-          for set in [self.clients, self.shutdown_clients]:
-            for c in set:
-              if not set[c]['stats']:
-                continue
-              self.log.debug("Client (%s) stats: %s"%(set[c]['addr'], set[c]['stats']))
-      self._set_server_state(next_state)
-      
   def _heartbeat(self, idle_count):
     """
     Fill in docstring
@@ -558,79 +637,140 @@ class HydraServer(object):
     self.log.debug("Heartbeat count: %d, idle count: %d"%(self.heartbeat_count, idle_count))
     # First check if we need to shutdown this client
     self.log.debug("Checking for shutdown state: %s"%self.state)
-    if self.state == 'shutdown_pending' and idle_count > self.idle_shutdown_interval:
-      self._set_server_state('shutdown')
+    if self.state == STATE_SHUTDOWN_PENDING and idle_count > self.idle_shutdown_interval:
+      self.event_queue.append({'c': EVENT_SHUTDOWN_COMPLETE, 'd': None})
       return
-    # Check if we have idle clients. If we do query any active clients and have
-    # them return work items
-    try:
-      num_idle_clients = 0
-      processing_clients = []
-      self.log.debug("Checking for idle clients")
-      for k in self.clients.keys():
-        client_state = self.clients.get(k, {})['state']
-        self.log.debug("Current client state: %s - %s"%(k, client_state))
-        if client_state == 'processing' or client_state == 'paused':
-          processing_clients.append(k)
-        elif client_state == 'idle':
-          num_idle_clients += 1
-      if len(self.work_queue) < num_idle_clients:
-        for c in processing_clients:
-          self.log.debug("Requesting active client to return work: %s"%c)
-          self.send_client_command(c, {'cmd': 'return_work'})
-      else:
-        if num_idle_clients > 0:
-          self.log.debug("Existing work queue items sufficient to send to idle workers")
-    except Exception as e:
-      self.log.exception(e)
-    # If we have any unprocessed work items, send them to the workers
+    self._get_client_work_items()
+    # If we have any unprocessed work items, send them to the clients
     self.log.debug("Distribute work, items in queue: %d"%len(self.work_queue))
     self._process_dirs()
     # Request client stats if required
     if self.heartbeat_count%self.stats_heartbeat_interval == 0:
       self._get_client_stats()
-      
-  def _process_command(self, cmd):
+      self._send_ui_stats()
+  
+  def _shutdown(self):
     """
     Fill in docstring
     """
-    if not 'cmd' in cmd:
-      self.log.error("Unknown command format received from UI: %r"%cmd)
-      return
-    command = cmd.get('cmd')
-    if command == "submit_work":
-      proc_paths = cmd.get('paths', [])
-      self._queue_work_paths(proc_paths)
-      self.process_paths.extend(proc_paths)
-      self._process_dirs()
-    elif command == 'shutdown':
-      self._shutdown()
-    elif command == 'get_stats':
-      self._send_ui_stats(cmd)
-    elif command == 'start':
-      pass
-    elif command == 'pause':
-      pass
-    elif command == 'update_settings':
-      self.handle_update_settings(command)
-    else:
-      if not self.handle_extended_server_cmd(cmd):
-        self.log.warn("Unhandled UI command: %s"%cmd)
-      
-  def _shutdown(self, type='normal'):
-    """
-    Fill in docstring
-    """
-    if type == 'immediate':
-      self._set_server_state('shutdown')
-    else:
-      self._set_server_state('shutdown_pending')
     if self.clients:
       for c in self.clients:
         self.log.debug("Shutting down client: %s"%c)
         self._shutdown_client(c)
     else:
-      self._set_server_state('shutdown')
+      self.event_queue.append({'c': EVENT_SHUTDOWN_COMPLETE, 'd': None})
+
+  # State machine methods
+  def _init_state_table(self, state_dict):
+    """
+    Fill in docstring
+    """
+    for state in state_dict.keys():
+      self._sm_copy_state(self.state_table, state, state_dict[state])
+    
+  def _sm_copy_state(self, state_table, state, ev_handlers):
+    for event in ev_handlers.keys():
+      self._sm_add_event_handler(state_table, state, event, ev_handlers[event])
+    
+  def _sm_add_event_handler(self, state_table, state, event, handler):
+    if not state in state_table:
+      state_table[state] = {}
+    sm_state = state_table[state]
+    sm_state[event] = dict(handler)
+    if isinstance(sm_state[event].get('a'), str):
+      # Convert any string state handlers to actual bound methods
+      sm_state[event]['a'] = getattr(self, sm_state[event].get('a'))
+    
+  def _process_state_event(self, event, data=None):
+    """
+    Fill in docstring
+    """
+    table = self.state_table[self.state]
+    handler = table.get(event)
+    if handler:
+      self.log.debug("Server handling event '%s' @ '%s' with '%s'"%(event, self.state, handler['a']))
+      next_state = handler['a'](event, data, handler.get('ns'))
+      self._set_state(next_state or handler.get('ns'))
+    else:
+      self.log.critical("Unhandled event (%s) received in '%s' state. Handlers:\n%s"%(event, self.state, table))
+    
+  def _set_state(self, state):
+    """
+    Fill in docstring
+    """
+    if state == None:
+      self.log.debug('No state transition: %s'%(self.state))
+      return
+    old_state = self.state
+    if old_state != state:
+      if state == STATE_IDLE or state == STATE_SHUTDOWN:
+        self._send_ui_stats()
+      self.state = state
+      self._send_ui({'cmd': CMD_SVR_STATE, 'state': self.state, 'prev_state': old_state})
+      self.log.debug('Server state change: %s => %s'%(old_state, state))
+    return old_state
+    
+  def _h_no_op(self, event, data, next_state):
+    return next_state
+    
+  def _h_client_connect(self, event, data, next_state):
+    client = self._connect_client()
+    self.handle_client_connected(client['conn'])
+    return next_state
+    
+  def _h_client_req_work(self, event, data, next_state):
+    self._process_dirs()
+    return next_state
+
+  def _h_client_state(self, event, data, next_state):
+    client_state = data.get('cmd', {}).get('state')
+    old_state = self._process_client_state(data.get('id'), client_state)
+    # If a client just transitioned out of the CONNECTED state we will try and
+    # send any work we have queued up already immediately.
+    # If a client is transitioning into the PROCESSING_WAITING state, that means
+    # the client is waiting for more work. Send work immediately if any is
+    # available.
+    if old_state in [HydraClient.STATE_CONNECTED] or client_state in [HydraClient.STATE_PROCESSING_WAITING]:
+      self._process_dirs(data.get('id'))
+    self._process_waiting_client()
+    return next_state
+
+  def _h_client_stats(self, event, data, next_state):
+    self._process_client_stats(data.get('id'), data.get('cmd'))
+    return next_state
+
+  def _h_client_work(self, event, data, next_state):
+    self._process_returned_work(data.get('cmd'))
+    return next_state
+    
+  def _h_heartbeat(self, event, data, next_state):
+    self._heartbeat(data['idle_count'])
+    return next_state
+
+  def _h_query_stats(self, event, data, next_state):
+    """
+      data: Valid values are None, 'normal' or 'individual'
+    """
+    if data.get('data') == 'individual':
+      type = 'individual'
+    else:
+      type = 'normal'
+    self._send_ui_stats(type=type)
+    return next_state
+
+  def _h_shutdown(self, event, data, next_state):
+    self._shutdown()
+    return next_state
+
+  def _h_submit_work(self, event, data, next_state):
+    proc_paths = data.get('paths', [])
+    self._queue_work_paths(proc_paths)
+    self._process_dirs()
+    return next_state
+    
+  def _h_update_settings(self, event, data, next_state):
+    self.handle_update_settings(data)
+    return next_state
 
 
 class HydraServerProcess(multiprocessing.Process):

@@ -120,7 +120,6 @@ STATE_PROCESSING_PAUSED = 'processing_paused'
 STATE_SHUTDOWN = 'shutdown'
 
 EVENT_CONNECT = 'connect'
-EVENT_HEARTBEAT = 'heartbeat'
 EVENT_PAUSE = 'pause'
 EVENT_PROCESS_DIR = 'proc_dir'
 EVENT_PROCESS_WORK = 'proc_work'
@@ -129,13 +128,27 @@ EVENT_QUERY_STATS = 'return_stats'
 EVENT_RESUME = 'resume'
 EVENT_RETURN_WORK = 'return_work'
 EVENT_SHUTDOWN = 'shutdown'
-EVENT_SHUTDOWN_FORCED = 'force_shutdown'
 EVENT_UPDATE_SETTINGS = 'update_settings'
 
-CMD_WORK_ITEMS = 'worker_work_items'
+# Commands sent from the worker to a client
 CMD_STATE = 'worker_state'
 CMD_STATS = 'worker_stats'
+CMD_WORK_ITEMS = 'worker_work_items'
 CMD_WORK_QUEUE_EMPTY = 'worker_queue_empty'
+
+'''
+CMD_STATE - Send state as a string using the STATE_* definitions above
+Format: {'op': CMD_STATE, 'data': <state>}
+
+CMD_STATS - 
+
+CMD_WORK_QUEUE_EMPTY  - Used as an internal command only
+
+CMD_WORK_ITEMS - Send unprocessed directories
+Format: {'op': CMD_WORK_ITEMS, 'data': <work_item>}
+work_item: [{'type': 'dir', 'path': <string>},...]
+
+'''
 
 HYDRA_WORKER_STATE_TABLE = {
   STATE_INIT: {
@@ -151,7 +164,6 @@ HYDRA_WORKER_STATE_TABLE = {
       #EVENT_RESUME:           {'a': '_h_',                    'ns': None},
       #EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
-      EVENT_SHUTDOWN_FORCED:  {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
       EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
       CMD_WORK_QUEUE_EMPTY:   {'a': '_h_no_op',               'ns': None},
   },
@@ -165,7 +177,6 @@ HYDRA_WORKER_STATE_TABLE = {
       #EVENT_RESUME:           {'a': '_h_',                    'ns': None},
       EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
-      EVENT_SHUTDOWN_FORCED:  {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
       EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
       CMD_WORK_QUEUE_EMPTY:   {'a': '_h_no_op',               'ns': STATE_IDLE},
   },
@@ -179,7 +190,6 @@ HYDRA_WORKER_STATE_TABLE = {
       EVENT_RESUME:           {'a': '_h_resume',              'ns': STATE_PROCESSING},
       EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
-      EVENT_SHUTDOWN_FORCED:  {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
       EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
   },
   STATE_PAUSED: {
@@ -192,7 +202,6 @@ HYDRA_WORKER_STATE_TABLE = {
       EVENT_RESUME:           {'a': '_h_resume',              'ns': STATE_IDLE},
       EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
-      EVENT_SHUTDOWN_FORCED:  {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
       EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
   },
   STATE_SHUTDOWN: {
@@ -205,7 +214,6 @@ HYDRA_WORKER_STATE_TABLE = {
       #EVENT_RESUME:           {'a': '_h_no_op',               'ns': None},
       EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_no_op',               'ns': None},
-      EVENT_SHUTDOWN_FORCED:  {'a': '_h_no_op',               'ns': None},
       EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
   },
 }
@@ -424,7 +432,10 @@ class HydraWorker(multiprocessing.Process):
           data = HydraUtils.socket_recv(s, data_len)
           if len(data) > 0:
             self.log.log(9, "Worker got data: %r"%data)
-            self._process_state_event(data.get('op', None), data)
+            try:
+              self._process_state_event(data.get('op', None), data)
+            except Exception as e:
+              self.log.exception(e)
           else:
             self.log.error("Input ready but no data received")
       # Handle exceptions
@@ -456,7 +467,8 @@ class HydraWorker(multiprocessing.Process):
           if handled:
             wait_count = 0
           else:
-            self._process_state_event(CMD_WORK_QUEUE_EMPTY)
+            if len(self.work_queue) <= 0:
+              self._process_state_event(CMD_WORK_QUEUE_EMPTY)
             if wait_count < HydraUtils.LONG_WAIT_THRESHOLD:
               wait_count += HydraUtils.SHORT_WAIT_TIMEOUT
         except KeyboardInterrupt:
@@ -550,7 +562,14 @@ class HydraWorker(multiprocessing.Process):
       if dir in [None]:
         self.log.warn('Invalid directory process request: %s'%dir)
         continue
-      self.work_queue.append({'type': 'dir', 'path': dir})
+      if isinstance(dir, dict):
+        if all(k in dir for k in ('type', 'path')):
+          self.work_queue.append(dir)
+        else:
+          self.log.critical("Queue dirs could not queue object: %s"%dir)
+          continue
+      else:
+        self.work_queue.append({'type': 'dir', 'path': dir})
       self.stats['queued_dirs'] += 1
       
   def _queue_work(self, data):
@@ -688,7 +707,7 @@ class HydraWorker(multiprocessing.Process):
             # We actually want to abort the tree walk as we want to handle the directory structure 1 directory at a time
             dirs[:] = []
         except Exception as e:
-          self.log.critical(e)
+          self.log.exception(e)
           raise
       if temp_work:
         self.work_queue.appendleft({'type': 'partial_dir', 'path': work_dir, 'files': temp_work})
@@ -762,7 +781,7 @@ class HydraWorker(multiprocessing.Process):
     table = self.state_table[self.state]
     handler = table.get(event)
     if handler:
-      self.log.debug("Handling event '%s' => '%s' with '%s'"%(event, self.state, handler['a']))
+      self.log.debug("Worker handling event '%s' @ '%s' with '%s'"%(event, self.state, handler['a']))
       next_state = handler['a'](event, data, handler.get('ns'))
       self._set_state(next_state or handler.get('ns'))
     else:
@@ -774,14 +793,14 @@ class HydraWorker(multiprocessing.Process):
     Fill in docstring
     """
     if state == None:
-      self.log.debug('No state transition. %s ==> %s'%(self.state, self.state))
+      self.log.debug('No state transition: %s'%(self.state))
       return
     old_state = self.state
     if old_state != state:
       if state == STATE_IDLE or state == STATE_SHUTDOWN:
         self._return_stats()
       self.state = state
-      self.log.debug('Worker state change: %s ==> %s'%(old_state, state))
+      self.log.debug('Worker state change: %s => %s'%(old_state, state))
       self._return_state()
     return old_state
     

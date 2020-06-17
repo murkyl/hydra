@@ -30,9 +30,8 @@ if __package__ is None:
     current_file = inspect.getfile(inspect.currentframe())
     base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
     sys.path.insert(0, base_path)
-from HydraWorker import HydraWorker
-from HydraClient import HydraClient
-from HydraClient import HydraClientProcess
+import HydraWorker
+import HydraClient
 import HydraUtils
 
 """
@@ -64,8 +63,8 @@ def create_files(path, num, size, buffer = None, buf_size = 1024*1024, prefix = 
           bytes_to_write -= remainder
     
 
-class HydraTestClassSlowFileProcess(HydraWorker):
-  def __init__(self, args={}):
+class HydraTestClassSlowFileProcess(HydraWorker.HydraWorker):
+  def __init__(self, args):
     super(HydraTestClassSlowFileProcess, self).__init__(args)
     # Set a default delay of 0.5 seconds per file processed
     self.file_delay = FILE_DELAY
@@ -100,15 +99,13 @@ class HydraTestClassSlowFileProcess(HydraWorker):
     if self.file_delay > 0:
       time.sleep(self.file_delay)
     file_lstats = os.lstat(os.path.join(dir, file))
-    #logging.getLogger().debug("Proc file: %s"%os.path.join(dir, file))
-    return True
-    
-  def handle_extended_ops(self, data):
-    if data.get('op') == 'setdelay':
-      self.file_delay = data.get('payload')
+    #logging.getLogger().critical("Proc file: %s"%os.path.join(dir, file))
     return True
 
-class HydraTestClass(HydraWorker):
+  def handle_update_settings(self, cmd):
+    self.setFileDelay(cmd.get('settings', {}).get('delay', 0))
+
+class HydraTestClass(HydraWorker.HydraWorker):
   def __init__(self, args={}):
     super(HydraTestClass, self).__init__(args)
     
@@ -202,7 +199,7 @@ class TestHydraClient(unittest.TestCase):
     This test closes the connection abruptly to the client
     It should cause some socket closed errors
     '''
-    client = HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
+    client = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
     client.set_workers(1)
     client.start()
     connection = None
@@ -232,14 +229,14 @@ class TestHydraClient(unittest.TestCase):
     This test closes the connection abruptly to the client
     It should cause some socket closed errors
     '''
-    client = HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
+    client = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
     client.start()
     try:
       readable, _, _ = select.select([self.server], [], [], 5)
       connection, client_address = self.server.accept()
       logging.getLogger().debug('New connection from %s, Socket: %s'%(client_address, connection))
       connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-      cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir0', 'subdir0')]}
+      cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir0', 'subdir0')]}
       self.send_client_msg(cmd, connection)
       logging.getLogger().debug("Sleep 5 seconds before closing connection")
       time.sleep(5)
@@ -262,20 +259,20 @@ class TestHydraClient(unittest.TestCase):
     This test closes the connection abruptly to the client
     It should cause some socket closed errors
     '''
-    client = HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
+    client = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
     client.start()
     try:
       readable, _, _ = select.select([self.server], [], [], 5)
       connection, client_address = self.server.accept()
       logging.getLogger().debug('New connection from %s, Socket: %s'%(client_address, connection))
       connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-      cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir0', 'subdir0')]}
+      cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir0', 'subdir0')]}
       self.send_client_msg(cmd, connection)
-      cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir0', 'subdir1')]}
+      cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir0', 'subdir1')]}
       self.send_client_msg(cmd, connection)
-      cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir0', 'subdir2')]}
+      cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir0', 'subdir2')]}
       self.send_client_msg(cmd, connection)
-      cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir0', 'subdir3')]}
+      cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir0', 'subdir3')]}
       self.send_client_msg(cmd, connection)
       logging.getLogger().debug("Sleep 5 seconds before closing connection")
       time.sleep(5)
@@ -296,9 +293,8 @@ class TestHydraClient(unittest.TestCase):
     '''
     This test aborts the run in the middle of processing. This causes will very
     likely cause a partially processed directory to be returned.
-    
     '''
-    client = HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
+    client = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
     client.set_workers(2)
     client.start()
     try:
@@ -314,11 +310,11 @@ class TestHydraClient(unittest.TestCase):
         for s in  readable:
           data = self.recv_server_msg(connection)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'state':
-            self.assertEqual(data.get('state'), ['connected', 'idle'][i])
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
+            self.assertEqual(data.get('state'), [HydraClient.STATE_CONNECTED, HydraClient.STATE_IDLE][i])
 
       for i in range(0, 3):
-        cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, "dir%d"%i)]}
+        cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, "dir%d"%i)]}
         self.send_client_msg(cmd, connection)
       logging.getLogger().debug("Wait up to 40 seconds to allow for file processing")
       start = time.time()
@@ -333,17 +329,18 @@ class TestHydraClient(unittest.TestCase):
           data = self.recv_server_msg(s)
           logging.getLogger().debug("Received interim message: :%s"%data)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'stats':
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
             found_stats = True
             break
         if found_stats:
           break
       
       logging.getLogger().debug("Shutting down client")
-      cmd = {'cmd': 'shutdown'}
+      cmd = {'op': HydraClient.EVENT_SHUTDOWN}
       self.send_client_msg(cmd, connection)
       
       found_stats = False
+      found_shutdown = False
       for i in range(15):
         logging.getLogger().debug("Waiting for stats update and shutdown")
         # Wait for stats update before client shutdown
@@ -356,11 +353,14 @@ class TestHydraClient(unittest.TestCase):
           self.assertIsNot(data, False)
           cmd = data.get('cmd')
           self.assertTrue(cmd is not None, msg='Invalid command from worker.')
-          if cmd == 'stats':
+          if cmd == HydraClient.CMD_CLIENT_STATS:
             found_stats = True
-          elif cmd == 'state':
-            if data.get('state') == 'shutdown':
+          elif cmd == HydraClient.CMD_CLIENT_STATE:
+            if data.get('state') == HydraClient.STATE_SHUTDOWN:
+              found_shutdown = True
               break
+        if found_shutdown:
+          break
       self.assertTrue(found_stats, msg='Expected to receive some stats from workers. None received.')
 
       logging.getLogger().debug("Closing server to client connection")
@@ -383,25 +383,25 @@ class TestHydraClient(unittest.TestCase):
       
   #@unittest.skip("")
   def test_5_periodic_stats_query(self):
-    client = HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
+    client = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
     num_workers = 2
     client.set_workers(num_workers)
     client.start()
-    inputs = []
     try:
       readable, _, _ = select.select([self.server], [], [], 5)
       connection, client_address = self.server.accept()
       logging.getLogger().debug('New connection from %s, Socket: %s'%(client_address, connection))
       connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
-      inputs.append(connection)
+      inputs = [connection]
       for i in range(0,3):
-        cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir%d'%i)]}
+        cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir%d'%i)]}
         self.send_client_msg(cmd, connection)
       logging.getLogger().debug("Sleep 10 seconds to allow for file processing")
       time.sleep(10)
       
       stats_to_find = 2
-      cmd = {'cmd': 'return_stats'}
+      logging.getLogger().debug("Sending stats request")
+      cmd = {'op': HydraClient.EVENT_QUERY_STATS}
       self.send_client_msg(cmd, connection)
       # Wait for multiple stats update before client shutdown
       for i in range(10):
@@ -410,29 +410,31 @@ class TestHydraClient(unittest.TestCase):
           self.assertIsNot(len(readable), 0)
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'stats':
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
             # Request another stats update
-            cmd = {'cmd': 'return_stats'}
+            logging.getLogger().debug("Sending stats request")
+            cmd = {'op': HydraClient.EVENT_QUERY_STATS}
             self.send_client_msg(cmd, s)
             stats_to_find -= 1
             if stats_to_find <= 0:
               break
+          else:
+            logging.getLogger().debug("Received interim cmd: %s"%data)
         if stats_to_find <= 0:
           break
       self.assertTrue(stats_to_find <= 0)
 
       # Send shutdown
       logging.getLogger().debug("Waiting for shutdown")
-      cmd = {'cmd': 'shutdown'}
+      cmd = {'op': HydraClient.EVENT_SHUTDOWN}
       self.send_client_msg(cmd, connection)
       shutdown_found = 0
       for i in range(20):
-        
-        readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*4)
+        readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
         if readable:
           data = self.recv_server_msg(connection)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'state' and data.get('state') == 'shutdown':
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('state') == HydraClient.STATE_SHUTDOWN:
             shutdown_found = 1
             break
       self.assertTrue(shutdown_found >= 1)
@@ -453,7 +455,7 @@ class TestHydraClient(unittest.TestCase):
       
   #@unittest.skip("")
   def test_6_full_run_2_workers(self):
-    client = HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG})
+    client = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG})
     num_workers = 2
     client.set_workers(num_workers)
     client.start()
@@ -473,15 +475,15 @@ class TestHydraClient(unittest.TestCase):
           self.assertIsNot(len(readable), 0)
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'state':
-            if data.get('state') == 'idle':
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
+            if data.get('state') == HydraClient.STATE_IDLE:
               complete = True
               break
         if complete:
           break
 
       for i in range(0,10):
-        cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir%d'%i)]}
+        cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir%d'%i)]}
         self.send_client_msg(cmd, connection)
 
       complete = False
@@ -492,35 +494,41 @@ class TestHydraClient(unittest.TestCase):
           self.assertIsNot(len(readable), 0)
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'state':
-            if data.get('state') == 'idle' and data.get('prev_state') != 'connected':
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
+            if data.get('state') == HydraClient.STATE_IDLE:
               complete = True
-          elif data.get('cmd') == 'stats':
+          elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
             logging.getLogger().debug("Stats: %s"%data.get('stats'))
+          elif data.get('cmd') == HydraClient.CMD_CLIENT_REQUEST_WORK:
+            if data['worker_status']['processing'] == 0:
+              cmd = {'op': HydraClient.EVENT_NO_WORK}
+              self.send_client_msg(cmd, connection)
+          else:
+            logging.getLogger().debug("Received interim message: %s"%data)
         if complete:
           break
 
       # Send shutdown
       logging.getLogger().debug("Waiting for shutdown")
-      cmd = {'cmd': 'shutdown'}
+      cmd = {'op': HydraClient.EVENT_SHUTDOWN}
       self.send_client_msg(cmd, connection)
       
-      shutdown_found = 0
+      shutdown_found = False
       for i in range(20):
         readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*4)
         if readable:
           data = self.recv_server_msg(connection)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'state' and data.get('state') == 'shutdown':
-            shutdown_found = 1
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('state') == HydraClient.STATE_SHUTDOWN:
+            shutdown_found = True
             break
-          elif data.get('cmd') == 'stats':
+          elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
             self.assertEqual(1100, data['stats']['processed_files'])
             self.assertEqual(110, data['stats']['processed_dirs'])
           else:
             logging.getLogger().debug("Other msg: %s"%data)
 
-      self.assertTrue(shutdown_found >= 1)
+      self.assertTrue(shutdown_found)
       
       logging.getLogger().debug("Closing server to client connection")
       connection.close()
@@ -538,7 +546,7 @@ class TestHydraClient(unittest.TestCase):
         
   #@unittest.skip("")
   def test_7_full_run_20_workers(self):
-    client = HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG})
+    client = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG})
     num_workers = 20
     client.set_workers(num_workers)
     client.start()
@@ -558,15 +566,15 @@ class TestHydraClient(unittest.TestCase):
           self.assertIsNot(len(readable), 0)
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'state':
-            if data.get('state') == 'idle':
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
+            if data.get('state') == HydraClient.STATE_IDLE:
               complete = True
               break
         if complete:
           break
 
       for i in range(0,10):
-        cmd = {'cmd': 'submit_work', 'paths': [os.path.join(self.test_path, 'dir%d'%i)]}
+        cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir%d'%i)]}
         self.send_client_msg(cmd, connection)
 
       complete = False
@@ -577,37 +585,45 @@ class TestHydraClient(unittest.TestCase):
           self.assertIsNot(len(readable), 0)
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'state':
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
             logging.getLogger().debug("Client sent state update: %s"%data)
-            if (data.get('state') == 'idle') and (data.get('prev_state') == 'processing'):
+            if (data.get('state') == HydraClient.STATE_IDLE) and (data.get('prev_state') in [HydraClient.STATE_PROCESSING, HydraClient.STATE_PROCESSING_WAITING]):
               logging.getLogger().debug("Client transitioned to idle from %s"%data.get('prev_state'))
               complete = True
-          elif data.get('cmd') == 'stats':
+          elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
             logging.getLogger().debug("Stats: %s"%data.get('stats'))
+          elif data.get('cmd') == HydraClient.CMD_CLIENT_REQUEST_WORK:
+            if data['worker_status']['processing'] == 0:
+              cmd = {'op': HydraClient.EVENT_NO_WORK}
+              self.send_client_msg(cmd, connection)
+            logging.getLogger().debug("Got work request: %s"%data)
+          else:
+            logging.getLogger().debug("Received interim cmd: %s"%data)
+            
         if complete:
           break
 
       # Send shutdown
       logging.getLogger().debug("Waiting for shutdown")
-      cmd = {'cmd': 'shutdown'}
+      cmd = {'op': 'shutdown'}
       self.send_client_msg(cmd, connection)
       
-      shutdown_found = 0
+      shutdown_found = False
       for i in range(20):
         readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*4)
         if readable:
           data = self.recv_server_msg(connection)
           self.assertIsNot(data, False)
-          if data.get('cmd') == 'state' and data.get('state') == 'shutdown':
-            shutdown_found = 1
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('state') == HydraClient.STATE_SHUTDOWN:
+            shutdown_found = True
             break
-          elif data.get('cmd') == 'stats':
+          elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
             self.assertEqual(1100, data['stats']['processed_files'])
             self.assertEqual(110, data['stats']['processed_dirs'])
           else:
             logging.getLogger().debug("Other msg: %s"%data)
 
-      self.assertTrue(shutdown_found >= 1)
+      self.assertTrue(shutdown_found)
       
       logging.getLogger().debug("Closing server to client connection")
       connection.close()
@@ -617,6 +633,175 @@ class TestHydraClient(unittest.TestCase):
         self.assertFalse(client.is_alive())
       except:
         client.terminate()
+        raise
+    except Exception as e:
+      logging.getLogger().exception(e)
+      if connection:
+        connection.close()
+
+  #@unittest.skip("")
+  def test_8_distribute_work(self):
+    num_workers = 1
+    num_clients = 2
+    connections = []
+    client1 = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
+    client2 = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
+    client1.set_workers(num_workers)
+    client2.set_workers(num_workers)
+    client1.start()
+    client2.start()
+    inputs = []
+    try:
+      for i in range(num_clients):
+        readable, _, _ = select.select([self.server], [], [], 5)
+        connection, client_address = self.server.accept()
+        logging.getLogger().debug('New connection from %s, Socket: %s'%(client_address, connection))
+        connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
+        inputs.append(connection)
+        connections.append(connection)
+      
+      complete = 0
+      # Wait for client to report idle
+      for i in range(100):
+        readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
+        for s in readable:
+          self.assertIsNot(len(readable), 0)
+          data = self.recv_server_msg(s)
+          self.assertIsNot(data, False)
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
+            if data.get('state') == HydraClient.STATE_IDLE:
+              complete += 1
+              break
+        if complete >= num_clients:
+          break
+      self.assertTrue(complete >= num_clients)
+
+      # Send the root directory to only 1 client
+      cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [self.test_path]}
+      self.send_client_msg(cmd, connection)
+
+      # Idle client to request work before sending a request for work to the non-idle client
+      time.sleep(3)
+      complete = 0
+      logging.getLogger().debug('Wait for a work request')
+      for i in range(100):
+        readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
+        for s in readable:
+          self.assertIsNot(len(readable), 0)
+          data = self.recv_server_msg(s)
+          self.assertIsNot(data, False)
+          if data.get('cmd') == HydraClient.CMD_CLIENT_REQUEST_WORK:
+            for conn in connections:
+              if conn != s:
+                cmd = {'op': HydraClient.EVENT_RETURN_WORK}
+                self.send_client_msg(cmd, conn)
+                complete += 1
+                break
+        if complete >= 1:
+          break
+      self.assertTrue(complete >= 1)
+
+      # Turn off the file delay to speed up the test
+      for i in range(num_clients):
+        cmd = {'op': HydraClient.EVENT_UPDATE_SETTINGS, 'settings': {'delay': 0}}
+        self.send_client_msg(cmd, connections[i])
+      
+      # Wait for client to return work and then send the returned work to the
+      # idle client
+      work_returned = False
+      complete = 0
+      for i in range(100):
+        readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
+        for s in readable:
+          self.assertIsNot(len(readable), 0)
+          data = self.recv_server_msg(s)
+          self.assertIsNot(data, False)
+          if data.get('cmd') == HydraClient.CMD_CLIENT_WORK:
+            # Get the return paths and send it to the second client
+            for i in range(num_clients):
+              if connections[i] != connection:
+                work_returned = True
+                cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': data.get('data')}
+                self.send_client_msg(cmd, connections[i])
+            complete += 1
+            break
+        if complete >= 1:
+          break
+      self.assertTrue(complete >= 1)
+      self.assertTrue(work_returned)
+
+      complete = False
+      # Wait for client to report idle
+      for i in range(100):
+        readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
+        for s in readable:
+          self.assertIsNot(len(readable), 0)
+          data = self.recv_server_msg(s)
+          self.assertIsNot(data, False)
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
+            logging.getLogger().debug("Client sent state update: %s"%data)
+            if (data.get('state') == HydraClient.STATE_IDLE) and (data.get('prev_state') in [HydraClient.STATE_PROCESSING, HydraClient.STATE_PROCESSING_WAITING]):
+              logging.getLogger().debug("Client transitioned to idle from %s"%data.get('prev_state'))
+              complete = True
+          elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
+            logging.getLogger().debug("Stats: %s"%data.get('stats'))
+          elif data.get('cmd') == HydraClient.CMD_CLIENT_REQUEST_WORK:
+            if data['worker_status']['processing'] == 0:
+              cmd = {'op': HydraClient.EVENT_NO_WORK}
+              self.send_client_msg(cmd, connection)
+            logging.getLogger().debug("Got work request: %s"%data)
+          else:
+            logging.getLogger().debug("Received interim cmd: %s"%data)
+            
+        if complete:
+          break
+
+      # Send shutdown
+      logging.getLogger().debug("Waiting for shutdown")
+      for i in range(num_clients):
+        cmd = {'op': 'shutdown'}
+        self.send_client_msg(cmd, connections[i])
+      
+      shutdown_found = 0
+      processed_files = 0
+      processed_dirs = 0
+      for i in range(20):
+        # Escape in case we have no connections left to perform a select
+        if not inputs:
+          break
+        readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*4)
+        if readable and shutdown_found < num_clients:
+          for conn in readable:
+            data = self.recv_server_msg(conn)
+            self.assertIsNot(data, False)
+            if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('state') == HydraClient.STATE_SHUTDOWN:
+              shutdown_found += 1
+              inputs.remove(conn)
+              if shutdown_found >= num_clients:
+                break
+            elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
+              processed_files += data['stats']['processed_files']
+              processed_dirs += data['stats']['processed_dirs']
+            else:
+              logging.getLogger().debug("Other msg: %s"%data)
+      self.assertTrue(shutdown_found >= num_clients)
+      self.assertEqual(1100, processed_files)
+      self.assertEqual(111, processed_dirs)
+      
+      logging.getLogger().debug("Closing server to client connection")
+      connection.close()
+      logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
+      client1.join(10)
+      client2.join(10)
+      try:
+        self.assertFalse(client1.is_alive())
+      except:
+        client1.terminate()
+        raise
+      try:
+        self.assertFalse(client2.is_alive())
+      except:
+        client2.terminate()
         raise
     except Exception as e:
       logging.getLogger().exception(e)
@@ -636,6 +821,8 @@ if __name__ == '__main__':
   HydraUtils.config_logger(LOGGER_CONFIG, '', log_level=log_lvl)
   logging.config.dictConfig(LOGGER_CONFIG)
   root = logging.getLogger('')
+  worker = logging.getLogger('HydraWorker')
+  worker.level= logging.WARN
 
   suite1 = unittest.TestLoader().loadTestsFromTestCase(TestHydraClient)
   all_tests = unittest.TestSuite([suite1])
