@@ -170,6 +170,11 @@ def humanize_time(num_sec):
     if not time_str:
       time_str = '0 seconds'
   return time_str
+  
+def sdiv(numerator, divisor, undef='0'):
+  if divisor == 0:
+    return undef
+  return float(numerator)/float(divisor)
 
 def write_column_headers(headers, document, worksheet, row=0, col=0, row_height=28, col_width=20):
   worksheet.set_row(row, row_height, get_cell_format(document, 'header1'))
@@ -664,6 +669,7 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
     {'l': 'Total bytes processed',          'd': gbasic('file_size_total'),         'f': 'base10_gb'},
     {'l': 'Total bytes processed (block)',  'd': gbasic('file_size_block_total'),   'f': 'base10_gb'},
     {'l': 'Symlink files',                  'd': gbasic('symlink_files')},
+    {'l': 'Symlink directories',            'd': gbasic('symlink_dirs')},
     {'l': 'Skipped files',                  'd': gbasic('skipped_files')},
     {'l': 'Filtered files',                 'd': gbasic('filtered_files')},
     {'l': 'Filtered directories',           'd': gbasic('filtered_dirs')},
@@ -676,11 +682,11 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
     {'l': 'Widest directory',               'd': gbasic('max_dir_width')},
     {'l': 'Block size (bytes)',             'd': gconf('block_size')},
     {'l': 'Number of worker processes',     'd': gbasic('num_workers')},
-    {'l': 'Scanned path(s)',                'd': '\n'.join(gbasic('process_paths', [])), 'h': 15*len(gbasic('process_paths', ['']))},
+    {'l': 'Scanned path(s)',                'd': '\n'.join(gbasic('work_paths', [])), 'h': 15*len(gbasic('work_paths', ['']))},
     {'l': 'Prefix path(s)',                 'd': '\n'.join(gother('prefix_paths', [])),  'h': 15*len(gother('prefix_paths', ['']))},
     {'t': ''},
     {'t': 'Processing summary'},
-    {'l': 'Files processed/second',         'd': (gbasic('processed_files')/float(gbasic('time_client_processing'))), 'f': '2_decimal'},
+    {'l': 'Files processed/second',         'd': sdiv(gbasic('processed_files'), gbasic('time_client_processing')), 'f': '2_decimal'},
     {'l': 'Number of clients',              'd': gbasic('num_clients')},
     {'l': 'Total number of workers',        'd': gbasic('num_workers')},
     {'l': 'Cumulative client process time', 'd': gbasic('time_client_processing'),  'f': '4_decimal'},

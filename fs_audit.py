@@ -1,10 +1,10 @@
 # -*- coding: utf8 -*-
 __title__ = "fs_audit"
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 __all__ = []
 __author__ = "Andrew Chung <acchung@gmail.com>"
 __license__ = "MIT"
-__copyright__ = """Copyright 2019 Andrew Chung
+__copyright__ = """Copyright 2019,2020 Andrew Chung
 Permission is hereby granted, free of charge, to any person obtaining a copy of 
 this software and associated documentation files (the "Software"), to deal in 
 the Software without restriction, including without limitation the rights to 
@@ -43,11 +43,9 @@ import HydraUtils
 import stat
 import json
 import fs_audit_export
-from HydraWorker import HydraWorker
-from HydraClient import HydraClient
-from HydraClient import HydraClientProcess
-from HydraServer import HydraServer
-from HydraServer import HydraServerProcess
+import HydraWorker
+import HydraClient
+import HydraServer
 from HistogramStat import HistogramStat
 from HistogramStat import HistogramStatCountAndValue
 from HistogramStat import HistogramStat2D
@@ -165,6 +163,7 @@ EXTRA_BASIC_STATS = [
   'dir_depth_total',                        # Sum of the depth of every directory. Used to calculate the average directory depth
   'parent_dirs_total',                      # Total number of directories that have children
   'symlink_files',                          # Number of files that are symbolic links
+  'symlink_dirs',                           # Number of directories that are symbolic links
   'num_clients',                            # Number of clients in use
   'num_workers',                            # Number of workers in use
   'time_client_processing',                 # Track time clients spend doing work
@@ -197,10 +196,47 @@ EXTRA_STATS_DEPTH_MAX_ARRAY = [
 ]
 
 EXTRA_STATS_ARRAY = [
-  'process_paths',                          # [Array] Which root paths were scanned
+  'work_paths',                             # [Array] Which root paths were scanned
 ]
 
 UI_STAT_POLL_INTERVAL = 30
+
+# Extra state machine entries, events and commands
+CMD_STAT_CONSOLIDATE = 'stat_consolidate'
+CMD_UPDATE_DB_SETTINGS = 'update_db_settings'
+CMD_RECREATE_DB = 'recreate_db'
+CMD_RETURN_STATS_DB = 'return_stats_db'
+EVENT_STATS_DB = 'stats_db'
+EVENT_ALL_CLIENTS_CONN = 'all_clients_connected'
+
+STATE_DB_CONSOLIDATE = 'db_consolidate'
+FS_AUDIT_CLIENT_STATES = {
+  STATE_DB_CONSOLIDATE: {
+    HydraClient.EVENT_HEARTBEAT:        {'a': '_h_no_op',             'ns': None},
+    HydraClient.EVENT_NO_WORK:          {'a': '_h_no_op',             'ns': None},
+    HydraClient.EVENT_QUERY_STATS:      {'a': '_h_query_stats',       'ns': None},
+    HydraClient.EVENT_REQUEST_WORK:     {'a': '_h_no_op',             'ns': None},
+    HydraClient.EVENT_RETURN_WORK:      {'a': '_h_no_op',             'ns': None},
+    HydraClient.EVENT_SHUTDOWN:         {'a': '_h_shutdown',          'ns': HydraClient.STATE_SHUTDOWN},
+    HydraClient.EVENT_SUBMIT_WORK:      {'a': '_h_no_op',             'ns': None},
+    HydraClient.EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',   'ns': None},
+    HydraClient.EVENT_WORKER_STATE:     {'a': '_h_w_state',           'ns': None},
+    HydraClient.EVENT_WORKER_STATS:     {'a': '_h_w_stats',           'ns': None},
+  },
+}
+FS_AUDIT_SVR_STATES = {
+  STATE_DB_CONSOLIDATE: {
+    EVENT_STATS_DB:                     {'a': '_h_stats_db_received', 'ns': None},
+    EVENT_ALL_CLIENTS_CONN:             {'a': '_h_all_clients_conn',  'ns': None},
+    HydraServer.EVENT_CLIENT_CONNECTED: {'a': '_h_client_connect',    'ns': None},
+    HydraServer.EVENT_CLIENT_STATE:     {'a': '_h_client_state',      'ns': None},
+    HydraServer.EVENT_CLIENT_STATS:     {'a': '_h_client_stats',      'ns': None},
+    HydraServer.EVENT_HEARTBEAT:        {'a': '_h_heartbeat',         'ns': None},
+    HydraServer.EVENT_QUERY_STATS:      {'a': '_h_query_stats',       'ns': None},
+    HydraServer.EVENT_SHUTDOWN:         {'a': '_h_shutdown',          'ns': HydraServer.STATE_SHUTDOWN_PENDING},
+    HydraServer.EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',   'ns': None},
+  },
+}
 
 
 def incr_per_depth(data_array, index, val):
@@ -282,7 +318,7 @@ def init_stats_histogram(stat_state, hist_args):
 '''
 File audit worker handler
 '''
-class WorkerHandler(HydraWorker):
+class WorkerHandler(HydraWorker.HydraWorker):
   def __init__(self, args={}):
     self.args = dict(DEFAULT_CONFIG)
     self.args.update(args)
@@ -355,6 +391,7 @@ class WorkerHandler(HydraWorker):
     self.init_stats()
     init_stats_histogram(self.stats_advanced, self.args)
     
+    # Setup temp variables to skip dictionary overhead
     hist_file_count_by_size = self.stats_advanced['hist_file_count_by_size']
     hist_file_count_by_block_size = self.stats_advanced['hist_file_count_by_block_size']
     hist_file_count_by_atime = self.stats_advanced['hist_file_count_by_atime']
@@ -415,9 +452,9 @@ class WorkerHandler(HydraWorker):
       
   def filter_subdirectories(self, root, dirs, files):
     """
-    No filtering is happening below. We are updating stats that are best
-    collected when starting at a new directory like counting the number of files
-    in a directory or the number of subdirectories in this directory.
+    We are updating stats that are best collected when starting at a new
+    directory like counting the number of files in a directory or the number of
+    subdirectories in this directory.
     """
     num_dirs = len(dirs)
     num_files = len(files)
@@ -435,6 +472,28 @@ class WorkerHandler(HydraWorker):
     max_per_depth(self.stats['max_files_in_dir_per_dir_depth'], self.ppath_len, num_files)
     return dirs, files
 
+  def handle_directory_pre(self, dir):
+    """
+    Check to see if this directory is actually a symbolic link and filter out
+    if necessary
+    """
+    try:
+      dir_lstats = os.lstat(dir)
+    except WindowsError as e:
+      if e.winerror == 3 and len(dir) > HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH:
+        self.log.error('Unable to stat dir due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH)
+      else:
+        if HydraUtils.is_invalid_windows_filename(dir):
+          self.log.error('Directory contains invalid characters or invalid names for Windows: %s'%dir)
+        else:
+          self.log.exception(e)
+      return True
+    if stat.S_ISLNK(dir_lstats.st_mode):
+      # We do not want to process a symlink so account for it here as a symlink
+      self.stats['symlink_dirs'] += 1
+      return True
+    return False
+    
   def handle_file(self, dir, file):
     """
     Fill in docstring
@@ -447,12 +506,11 @@ class WorkerHandler(HydraWorker):
     except WindowsError as e:
       if e.winerror == 3 and len(full_path_file) > HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH:
         self.log.error('Unable to stat file due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH)
-        self.log.error(e)
       else:
         if HydraUtils.is_invalid_windows_filename(file):
           self.log.error('File contains invalid characters or invalid names for Windows: %s'%full_path_file)
         else:
-          self.log.error(e)
+          self.log.exception(e)
       return False
     finally:
       time_check_2 = time.process_time()
@@ -519,20 +577,20 @@ class WorkerHandler(HydraWorker):
     if not client_msg:
       return False
     cmd = client_msg.get('op')
-    if cmd == 'update_db_settings':
+    if cmd == CMD_UPDATE_DB_SETTINGS:
       self.db_collection_range = client_msg.get('collection_range', self.db_collection_range)
       new_db_name = client_msg.get('name')
       if new_db_name:
         self.args['db']['db_name'] = new_db_name
         self.init_db()
-    elif cmd == 'return_stats_db':
-      self._set_state('processing')
+    elif cmd == CMD_RETURN_STATS_DB:
+      self._set_state(HydraWorker.STATE_PROCESSING)
       self.consolidate_stats_db()
-      self._send_client('stats_db', {
+      self._send_client(EVENT_STATS_DB, {
           'stats': self.stats,
           'stats_advanced': self.stats_advanced,
       })
-      self._set_state('idle')
+      self._set_state(HydraWorker.STATE_IDLE)
     else:
       return False
     return True
@@ -574,14 +632,16 @@ class WorkerHandler(HydraWorker):
 '''
 File audit client processor
 '''
-class ClientProcessor(HydraClient):
+class ClientProcessor(HydraClient.HydraClient):
   def __init__(self, worker_class, args={}):
     super(ClientProcessor, self).__init__(worker_class, args)
-    self.init_db(recreate_db=args.get('db', {}).get('cmd_recreate_db'))
+    self.init_db(recreate_db=args.get('db', {}).get(CMD_RECREATE_DB))
     self.stats_advanced = {}
     self.other = {}
-    self.write_cstats = True
+    self.write_cstats = False
     self.start_time = time.time()
+    # Add a new state to the state table to handle DB consolidations
+    self._sm_copy_state(self.state_table, STATE_DB_CONSOLIDATE, FS_AUDIT_CLIENT_STATES[STATE_DB_CONSOLIDATE])
   
   def init_db(self, init_client=True, init_db=True, recreate_db=False):
     if self.args.get('db') and self.args['db'].get('db_type') != None:
@@ -633,6 +693,9 @@ class ClientProcessor(HydraClient):
     Add very specialized consolidation routines for non-standard statistics
     """
     record = self.db[self.args['cstats_table']].find_one({'type': 'client'})
+    if not record:
+      self.log.critical('Could not get the "client" key in the "cstats_table"')
+      return
     for k in record.keys():
       if k in ['_id', 'type', 'stats']:
         continue
@@ -660,19 +723,19 @@ class ClientProcessor(HydraClient):
         self.stats['num_clients'] = 1
         self.stats['num_workers'] = self.get_max_workers()
         self.stats['time_client_processing'] = time.time() - self.start_time
-        self.stats['process_paths'] = self.args['process_paths']
+        self.stats['work_paths'] = self.args.get('work_paths')
         result = self.db[self.args['cstats_table']].replace_one(
             {'type': 'client'},
             {
               'type': 'client',
               'stats': self.stats,
               # Add any additional client wide stats to save to DB here
-              'prefix_paths': self.args['prefix_paths'],
+              'prefix_paths': self.args.get('prefix_paths'),
             },
             upsert=True,
         )
-    except:
-      pass
+    except Exception as e:
+      self.log.exception(e)
 
   def consolidate_stats_db(self):
     init_stats_histogram(self.stats_advanced, self.args)
@@ -688,8 +751,8 @@ class ClientProcessor(HydraClient):
             self.log.error('Stats merge encountered a mismatch')
           
   def handle_extended_server_cmd(self, svr_msg):
-    cmd = svr_msg.get('cmd')
-    if cmd == 'recreate_db':
+    cmd = svr_msg.get('op')
+    if cmd == CMD_RECREATE_DB:
       if not self.db_client:
         self.log.warn("Recreate DB requested but no connection to DB exists")
         return True
@@ -698,29 +761,29 @@ class ClientProcessor(HydraClient):
         return True
       self.db_client.drop_database(self.args['db']['db_name'])
       self.db = self.db_client[self.args['db']['db_name']]
-    elif cmd == 'update_db_settings':
+    elif cmd == CMD_UPDATE_DB_SETTINGS:
       self.args['db']['db_name'] = svr_msg.get('name')
       self.init_db(init_client=False)
       self.init_db_collection_range()
       for set in [self.workers, self.shutdown_pending]:
         for w in set:
           set[w]['obj'].send({
-              'op': 'update_db_settings',
+              'op': CMD_UPDATE_DB_SETTINGS,
               'name': svr_msg.get('name'),
               'collection_range': set[w]['db_collection_range'],
           })
-    elif cmd == 'return_stats_db':
-      self.write_cstats = False
+    elif cmd == CMD_RETURN_STATS_DB:
       for set in [self.workers, self.shutdown_pending]:
         for w in set:
-          set[w]['obj'].send({'op': 'return_stats_db'})
+          set[w]['obj'].send({'op': CMD_RETURN_STATS_DB})
+      self._set_state(STATE_DB_CONSOLIDATE)
     else:
       return False
     return True
 
   def handle_extended_worker_msg(self, wrk_msg):
     cmd = wrk_msg.get('op')
-    if cmd == 'stats_db':
+    if cmd == EVENT_STATS_DB:
       worker_id = wrk_msg.get('id')
       all_stat_db_received = True
       for set in [self.workers, self.shutdown_pending]:
@@ -736,25 +799,24 @@ class ClientProcessor(HydraClient):
             if not set[w].get('stat_db_received'):
               all_stat_db_received = False
       if all_stat_db_received:
+        #TODO: Added below
+        self._set_state(HydraClient.STATE_IDLE)
         self.consolidate_stats()
         self.consolidate_stats_db()
         self.consolidate_other()
-        self._send_server({
-            'cmd': 'stats_db',
+        self._send_server(EVENT_STATS_DB, {
             'stats': self.stats,
             'stats_advanced': self.stats_advanced,
             'other': self.other,
-        })
+          }
+        )
     else:
       return False
     return True
     
   def handle_update_settings(self, cmd):
+    super(ClientProcessor, self).handle_update_settings(cmd)
     self.args.update(cmd['settings'])
-    self.send_all_workers({
-        'op': 'update_settings',
-        'settings': cmd['settings'],
-    })
     return True
 
   def handle_workers_connected(self):
@@ -766,19 +828,27 @@ class ClientProcessor(HydraClient):
     for set in [self.workers, self.shutdown_pending]:
       for w in set:
         set[w]['obj'].send({
-            'op': 'update_db_settings',
+            'op': CMD_UPDATE_DB_SETTINGS,
             'collection_range': set[w]['db_collection_range'],
         })
+        
+  def _set_state(self, state):
+    super(ClientProcessor, self)._set_state(state)
+    if state == HydraClient.STATE_PROCESSING:
+      self.write_cstats = True
+
     
 
 '''
 File audit server processor
 '''
-class ServerProcessor(HydraServer):
+class ServerProcessor(HydraServer.HydraServer):
   def __init__(self, args={}):
     super(ServerProcessor, self).__init__(args)
     self.stats_histogram = {}
     self.other = {}
+    # Add a new state to the state table to handle DB consolidations
+    self._sm_copy_state(self.state_table, STATE_DB_CONSOLIDATE, FS_AUDIT_SVR_STATES[STATE_DB_CONSOLIDATE])
     
   def init_stats(self, stat_state):
     super(ServerProcessor, self).init_stats(stat_state)
@@ -808,7 +878,7 @@ class ServerProcessor(HydraServer):
             self.other['prefix_paths'].extend(client_other.get('prefix_paths', []))
             self.other['prefix_paths'] = sorted(list(dict.fromkeys(self.other['prefix_paths'])))
   
-  def consolidate_stats(self):
+  def consolidate_stats(self, forced=False):
     '''
     The returned stats object can be access using the key values on the left
     side of the equal sign below. A description or formula for each of the keys
@@ -845,7 +915,7 @@ class ServerProcessor(HydraServer):
     average_file_size_block_per_dir_depth = file_size_block_total_per_dir_depth[i] / files_total_per_dir_depth[i]
     average_files_per_dir_depth = files_total_per_dir_depth[i] / dir_total_per_dir_depth[i]
     '''
-    if self.last_client_stat_update <= self.last_consolidate_stats:
+    if self.last_client_stat_update <= self.last_consolidate_stats and not forced:
       return self.stats
     super(ServerProcessor, self).consolidate_stats()
     for set in [self.clients, self.shutdown_clients]:
@@ -861,9 +931,9 @@ class ServerProcessor(HydraServer):
           add_to_per_depth(self.stats[s], set[c]['stats'][s])
         for s in EXTRA_STATS_DEPTH_MAX_ARRAY:
           max_to_per_depth(self.stats[s], set[c]['stats'][s])
-    if self.stats.get('process_paths'):
+    if self.stats.get('work_paths'):
       # Dedupe process paths
-      self.stats['process_paths'] = list(dict.fromkeys(self.stats['process_paths']))
+      self.stats['work_paths'] = list(dict.fromkeys(self.stats.get('work_paths')))
     # Calculate all the stats
     self.stats.update({
       'average_file_size': self.stats['file_size_total']/self.stats['processed_files'] if self.stats['processed_files'] else 0,
@@ -904,77 +974,87 @@ class ServerProcessor(HydraServer):
           },
           self.args.get('excel_filename'),
       )
+      
+  def send_clients_db_consolidate_cmd(self):
+    """
+    Send all our connected clients the command to start processing the stats from
+    their individual DBs. Mark each of the clients as having not yet returned
+    the stats data
+    """
+    self.send_all_clients_command(CMD_RETURN_STATS_DB)
+    for key in self.clients:
+      self.clients[key]['stat_db_received'] = False
   
   def handle_client_connected(self, client):
+    # Whenever a client connects, update their settings
     settings = {
-      'path_depth_adj': self.args['path_depth_adj'],
-      'reference_time': self.args['reference_time'],
-      'prefix_paths': self.args['prefix_paths'],
-      'process_paths': self.process_paths,
+      'path_depth_adj': self.args.get('path_depth_adj'),
+      'reference_time': self.args.get('reference_time'),
+      'prefix_paths': self.args.get('prefix_paths'),
+      'work_paths': self.work_paths,                      # From base class
     }
     self.send_client_command(
-        client,
-        {
-          'cmd': 'update_settings',
-          'settings': settings,
-        }
+        client, HydraClient.EVENT_UPDATE_SETTINGS, {'settings': settings}
     )
     if self.args['db']['db_svr_name']:
       self.send_client_command(
-        client, {'cmd': 'update_db_settings', 'name': self.args['db']['db_name']}
+        client, CMD_UPDATE_DB_SETTINGS, {'name': self.args['db']['db_name']}
       )
-    if self.args.get('cmd_recreate_db'):
-      self.send_client_command(
-        client, {'cmd': 'recreate_db'}
-      )
-    if self.args.get('cmd_stats_consolidate'):
-      self.send_client_command(
-        client, {'cmd': 'return_stats_db'}
-      )
-    
-  def handle_extended_client_cmd(self, client, cmd):
-    client_cmd = cmd.get('cmd')
-    if client_cmd == 'stats_db':
-      all_stat_db_received = True
-      for set in [self.clients, self.shutdown_clients]:
-        for c in set:
-          if c == client:
-            set[c]['stat_db_received'] = True
-            # Update the normal stats
-            self._process_client_stats(client, cmd)
-            # Save the histogram stats
-            self.clients[client]['stats_advanced'] = cmd['stats_advanced']
-            self.clients[client]['other'] = cmd.get('other', {})
-          else:
-            if not set[c].get('stat_db_received'):
-              all_stat_db_received = False
-      if all_stat_db_received:
-        self.consolidate_stats()
-        self.consolidate_stats_db()
-        self.consolidate_other()
-        self.export_stats()
-        # After exporting stats, the server can terminate
-        self._shutdown()
+    if self.args.get(CMD_RECREATE_DB):
+      self.send_client_command(client, CMD_RECREATE_DB)
+    if self.state == STATE_DB_CONSOLIDATE:
+      active_clients = len(self.clients)
+      if active_clients >= self.args['clients_required']:
+        self.event_queue.append({'c': EVENT_ALL_CLIENTS_CONN, 'd': None})
+      else:
+        self.log.debug("Connected clients: %d/%d"%(active_clients, self.args['clients_required']))
+  
+  def handle_extended_ui_cmd(self, event, data, src):
+    if event == CMD_RECREATE_DB:
+      self.args[CMD_RECREATE_DB] = True
+      self.send_all_clients_command(CMD_RECREATE_DB)
+    elif event == CMD_UPDATE_DB_SETTINGS:
+      self.args['db']['db_name'] = data.get('name')
+    elif event == CMD_STAT_CONSOLIDATE:
+      self.args['clients_required'] = data.get('client_count')
+      active_clients = len(self.clients)
+      if active_clients >= self.args['clients_required']:
+        self.event_queue.append({'c': EVENT_ALL_CLIENTS_CONN, 'd': None})
+      self._set_state(STATE_DB_CONSOLIDATE)
     else:
       return False
     return True
     
-  def handle_extended_server_cmd(self, cmd):
-    ui_cmd = cmd.get('cmd')
-    if ui_cmd == 'recreate_db':
-      self.args['cmd_recreate_db'] = True
-      self.send_all_clients_command({'cmd': 'recreate_db'})
-    elif ui_cmd == 'update_db_settings':
-      self.args['db']['db_name'] = cmd.get('name')
-    elif ui_cmd == 'stat_consolidate':
-      self.args['cmd_stats_consolidate'] = True
-      #self.send_all_clients_command({'cmd': 'return_stats_db'})
-      # Set a flag in the client state to track when all stats db have been returned
-      for key in self.clients:
-        self.clients[key]['stat_db_received'] = False
-    else:
-      return False
-    return True
+  def _h_all_clients_conn(self, event, data, next_state, src):
+    self.send_clients_db_consolidate_cmd()
+    return next_state
+  
+  def _h_stats_db_received(self, event, data, next_state, src):
+    all_stat_db_received = True
+    client = src.get('id')
+    for set in [self.clients, self.shutdown_clients]:
+      for c in set:
+        if c == client:
+          set[c]['stat_db_received'] = True
+          # Update the normal stats
+          self._process_client_stats(client, data)
+          # Save the histogram stats
+          self.clients[client]['stats_advanced'] = data.get('stats_advanced')
+          self.clients[client]['other'] = data.get('other', {})
+        else:
+          if not set[c].get('stat_db_received'):
+            all_stat_db_received = False
+    if all_stat_db_received:
+      self.consolidate_stats()
+      self.consolidate_stats_db()
+      self.consolidate_other()
+      self.export_stats()
+      # After exporting stats, the server can terminate
+      #self._set_state(HydraServer.STATE_IDLE)
+      # TODO: Should we shutdown or just wait?
+      self.event_queue.append({'c': HydraServer.EVENT_SHUTDOWN, 'd': None})
+      return HydraServer.STATE_IDLE
+    return next_state
 
 
 '''
@@ -1017,17 +1097,19 @@ def AddParserOptions(parser, raw_cli):
     op_group.add_option("--path_prefix_file",
                       default=None,
                       action="store",
-                      help="Path to a file holding prefixes to be appended to "
+                      help="Path to a file holding prefixes to prepend to "
                            "the path specified by the --path parameters. This "
                            "can be used to allow this client to process the "
                            "directory walk across parallel mounts/shares to "
                            "improve directory walk performance.")
     op_group.add_option("--stat_consolidate",
-                      action="store_true",
-                      default=False,
+                      type="int",
+                      default=0,
                       help="Instead of scanning a directory path, process data from existing database information."
                            " Using this option will prevent an actual tree walk. If a path is specified as well the"
-                           " path will be used to adjust for the path depth calculation only.")
+                           " path will be used to adjust for the path depth calculation only. This argument takes"
+                           " the number of clients/databases to process. This number should be the same as the"
+                           " number of clients used to walk the file system initially.")
     op_group.add_option("--excel_output",
                       default=None,
                       help="Specify a file name here to output stats results to an Excel formatted file")
@@ -1182,13 +1264,13 @@ def main():
     proc_paths = HydraUtils.get_processing_paths(options.path)
     # Get path prefix values
     prefix_paths = HydraUtils.get_processing_paths([], options.path_prefix_file)
-    if len(proc_paths) < 1 and not options.stat_consolidate:
+    if len(proc_paths) < 1 and options.stat_consolidate < 1:
       log.critical('A path via command line or stat_consolidate must be specified.')
       sys.exit(1)
     if prefix_paths:
       # If we are using prefix paths, we want to remove any absolute root path
       # as we assume all paths are relative to the prefix. We only strip off /
-      proc_paths = [path[1:] if path[0] == '/' else path for path in proc_paths]
+      proc_paths = [path[1:] if path[0] == os.sep else path for path in proc_paths]
 
     path_depth_adj = 0
     start_time = 0
@@ -1230,7 +1312,7 @@ def main():
       },
       'excel_filename': options.excel_output,
     })
-    svr = HydraServerProcess(
+    svr = HydraServer.HydraServerProcess(
         addr=options.listen,
         port=options.port,
         handler=ServerProcessor,
@@ -1240,68 +1322,69 @@ def main():
     # EXAMPLE:
     # Handle specific command line switches
     if options.db_svr_name:
-      svr.send({'cmd': 'update_db_settings', 'name': options.db_name})
-    if options.stat_consolidate:
-      svr.send({'cmd': 'stat_consolidate'})
+      svr.send(CMD_UPDATE_DB_SETTINGS, {'name': options.db_name})
+    if options.stat_consolidate > 0:
+      svr.send(CMD_STAT_CONSOLIDATE, {'client_count': options.stat_consolidate})
     else:
       if options.recreate_db:
-        svr.send({'cmd': 'recreate_db'})
+        svr.send(CMD_RECREATE_DB)
       # EXAMPLE:
       # The following line sends any paths from the CLI to the server to get ready
       # for processing as soon as clients connect. This could be done instead from
       # a UI or even via a TCP message to the server. For the purpose of this
       # example, this is the simplest method.
-      svr.send({'cmd': 'submit_work', 'paths': proc_paths})
+      svr.send(HydraServer.EVENT_SUBMIT_WORK, {'paths': proc_paths})
     svr.start()
     
     while True:
       try:
         readable, _, _ = select.select([svr], [], [], options.stat_poll_interval)
         if len(readable) > 0:
-          msg = svr.recv()
+          data = svr.recv()
           
-          cmd = msg.get('cmd')
-          if cmd == 'state':
-            state = msg.get('state')
-            pstate = msg.get('prev_state')
+          cmd = data.get('cmd')
+          if cmd == HydraServer.CMD_SVR_STATE:
+            state = data['msg'].get('state')
+            pstate = data['msg'].get('prev_state')
             log.info("Server state transition: %s -> %s"%(pstate, state))
-            if state == 'processing':
-              if pstate == 'idle':
+            if state == HydraServer.STATE_PROCESSING:
+              if pstate == HydraServer.STATE_IDLE:
                 start_time = time.time()
                 log.info("Time start: %s"%start_time)
-            elif state == 'idle':
+            elif state == HydraServer.STATE_IDLE:
               if startup:
                 startup = False
               else:
-                svr.send({'cmd': 'get_stats', 'data': 'individual_clients'})
+                svr.send(HydraServer.EVENT_QUERY_STATS, {'type': 'individual'})
                 end_time = time.time()
                 log.info("Time end: %s"%end_time)
                 log.info("Total time: %s"%(end_time - start_time))
-                svr.send({'cmd': 'output_final_stats'})
                 # EXAMPLE:
                 # The following line will shutdown the server when all
                 # clients go idle. If you comment out the line the server
                 # will continue to run and require some sort of interrupt of
                 # this example program or a message to be sent to the server to
                 # shutdown
-                svr.send({'cmd': 'shutdown'})
-            elif state == 'shutdown':
+                svr.send(HydraServer.EVENT_SHUTDOWN)
+            elif state == HydraServer.STATE_SHUTDOWN:
               break
-          elif cmd == 'stats':
-            log.info('UI received stats update (%s):\n%s'%(
+          elif cmd == HydraServer.CMD_SVR_STATS:
+            log.info(
+              'UI received stats update (%s):\n%s'%(
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
                 json.dumps(
-                    msg.get('stats'),
+                    data['msg'].get('stats'),
                     ensure_ascii=False,
                     indent=4,
                     sort_keys=True,
                 )
-            ))
+              )
+            )
           else:
             log.info("UI received: %s"%cmd)
         else:
           log.info("Server wait timeout. Asking for stats update.")
-          svr.send({'cmd': 'get_stats'})
+          svr.send(HydraServer.EVENT_QUERY_STATS)
       except KeyboardInterrupt as ke:
         log.info("Terminate signal received, shutting down")
         break
@@ -1337,7 +1420,7 @@ def main():
           'recreate_db': options.recreate_db,
         }
     })
-    client = HydraClientProcess(client_args)
+    client = HydraClient.HydraClientProcess(client_args)
     client.set_workers(options.num_workers)
     client.start()
     log.info("Waiting until client exits")
