@@ -162,7 +162,7 @@ HYDRA_WORKER_STATE_TABLE = {
       EVENT_QUERY_STATE:      {'a': '_h_query_state',         'ns': None},
       EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
       #EVENT_RESUME:           {'a': '_h_',                    'ns': None},
-      #EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
+      EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
       EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
       CMD_WORK_QUEUE_EMPTY:   {'a': '_h_no_op',               'ns': None},
@@ -444,13 +444,6 @@ class HydraWorker(multiprocessing.Process):
       
       # This section decides when to do the actual processing of the file
       # structure.
-      # If the current state is 'pause' then we skip processing until we get a
-      # 'resume' request.
-      # If the current state is 'shutdown' we skip processing, exit and cleanup.
-      # All other states will perform processing. The way this works is we walk
-      # a single directory and get the files and any subdirectories. If the
-      # processing does any work we will go to the 'processing' state. If no
-      # work is done then we move to the 'idle' state.
       # While in the 'idle' or 'pause' state, each iteration increments a
       # counter which slows down the polling interval used by the select
       # statement above. This is done to prevent the poll from consuming too
@@ -786,7 +779,7 @@ class HydraWorker(multiprocessing.Process):
       self._set_state(next_state or handler.get('ns'))
     else:
       if not self.handle_extended_ops(data):
-        self.log.critical("Unhandled event (%s) received in '%s' state. Handlers:\n%s"%(event, self.state, table))
+        self.log.critical("Unhandled event (%s) received in '%s' state."%(event, self.state))
     
   def _set_state(self, state):
     """

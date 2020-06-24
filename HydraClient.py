@@ -79,6 +79,7 @@ HYDRA_CLIENT_STATE_TABLE = {
   STATE_INIT: {
       EVENT_CONNECTED:        {'a': '_h_connected',           'ns': STATE_CONNECTED},
       EVENT_HEARTBEAT:        {'a': '_h_heartbeat',           'ns': None},
+      EVENT_NO_WORK:          {'a': '_h_no_op',               'ns': None},
       EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
       EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
@@ -89,6 +90,7 @@ HYDRA_CLIENT_STATE_TABLE = {
   STATE_CONNECTED: {
       #EVENT_CONNECTED:        {'a': '_h_no_op',               'ns': None},
       EVENT_HEARTBEAT:        {'a': '_h_heartbeat',           'ns': None},
+      EVENT_NO_WORK:          {'a': '_h_no_op',               'ns': None},
       EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
       #EVENT_RETURN_WORK:      {'a': '_h_return_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN},
@@ -288,7 +290,7 @@ class HydraClient(object):
     Handle a settings update from the server
     """
     self.send_all_workers({
-        'op': 'update_settings',
+        'op': HydraWorker.EVENT_UPDATE_SETTINGS,
         'settings': cmd['settings'],
     })
     return True
@@ -455,7 +457,7 @@ class HydraClient(object):
                 continue
               data_len = struct.unpack('!L', msg_size)[0]
               data = HydraUtils.socket_recv(s, data_len)
-              self.event_queue.append({'c': data.get('op'), 'd': data})
+              self.event_queue.append({'c': data.get('op'), 'd': data, 'src': 'server'})
             except EOFError as eof:
               self.log.debug("Closing server handle due to EOF of command stream: %r"%s)
               self._shutdown()
@@ -471,7 +473,7 @@ class HydraClient(object):
             cmd = s.recv()
             if len(cmd) > 0:
               self.log.log(9, "Got cmd from worker: %s"%cmd)
-              self.event_queue.append({'c': cmd.get('op'), 'd': cmd})
+              self.event_queue.append({'c': cmd.get('op'), 'd': cmd, 'src': 'worker'})
             else:
               s.close()
               self.inputs.remove(s)
@@ -493,7 +495,7 @@ class HydraClient(object):
       self.event_queue = []
       for entry in cur_queue:
         try:
-          self._process_state_event(entry['c'], entry.get('d'))
+          self._process_state_event(entry['c'], entry.get('d'), entry.get('src'))
         except Exception as e:
           self.log.exception(e)
           break
@@ -728,7 +730,7 @@ class HydraClient(object):
 
   def _request_work_from_server(self):
     idle, processing = self._get_idle_working_worker_keys()
-    self._send_server({'cmd': CMD_CLIENT_REQUEST_WORK, 'worker_status': {'idle': len(idle), 'processing': len(processing)}})
+    self._send_server(CMD_CLIENT_REQUEST_WORK, {'worker_status': {'idle': len(idle), 'processing': len(processing)}})
   
   def _return_server_work(self, divisor=2):
     """
@@ -741,20 +743,20 @@ class HydraClient(object):
         work_item = self.work_queue.pop()
         work_type = work_item.get('type', None)
         return_items.append(work_item)
-      self._send_server({'cmd': CMD_CLIENT_WORK, 'data': return_items})
+      self._send_server(CMD_CLIENT_WORK, {'work_items': return_items})
     else:
       # Check and retrieve work items from workers if not all workers are active
       self._get_worker_work_items(forced=True)
       self.server_waiting_for_work = True
     
-  def _send_server(self, msg):
+  def _send_server(self, cmd, msg):
     """
     Fill in docstring
     """
     self.log.debug("Sending server message: %s"%msg)
     try:
       if self.server:
-        HydraUtils.socket_send(self.server, msg)
+        HydraUtils.socket_send(self.server, {'cmd': cmd, 'msg': msg})
       else:
         self.log.info("Request to send server message with a closed server connection: %s"%msg)
     except Exception as e:
@@ -769,7 +771,7 @@ class HydraClient(object):
     Fill in docstring
     """
     self.consolidate_stats()
-    self._send_server({'cmd': CMD_CLIENT_STATS, 'stats': self.stats})
+    self._send_server(CMD_CLIENT_STATS, {'stats': self.stats})
     
   def _shutdown(self):
     """
@@ -805,7 +807,7 @@ class HydraClient(object):
       # Convert any string state handlers to actual bound methods
       sm_state[event]['a'] = getattr(self, sm_state[event].get('a'))
     
-  def _process_state_event(self, event, data=None):
+  def _process_state_event(self, event, data=None, src='server'):
     """
     Fill in docstring
     """
@@ -816,7 +818,12 @@ class HydraClient(object):
       next_state = handler['a'](event, data, handler.get('ns'))
       self._set_state(next_state or handler.get('ns'))
     else:
-      self.log.debug("Client discarding event '%s' @ '%s'"%(event, self.state))
+      if src == 'server':
+        if not self.handle_extended_server_cmd(data):
+          self.log.critical("Unhandled server event (%s) with data (%s) received in '%s' state."%(event, data, self.state))
+      else:
+        if not self.handle_extended_worker_msg(data):
+          self.log.critical("Unhandled worker event (%s) received in '%s' state."%(event, self.state))
     
   def _set_state(self, state):
     """
@@ -830,7 +837,7 @@ class HydraClient(object):
       if state == STATE_IDLE or state == STATE_SHUTDOWN:
         self._send_server_stats()
       self.state = state
-      self._send_server({'cmd': CMD_CLIENT_STATE, 'state': self.state, 'prev_state': old_state})
+      self._send_server(CMD_CLIENT_STATE, {'state': self.state, 'prev_state': old_state})
       self.log.debug('Client state change: %s => %s'%(old_state, state))
     return old_state
     
