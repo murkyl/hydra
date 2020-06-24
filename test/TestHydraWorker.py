@@ -69,8 +69,6 @@ class HydraTestClassSlowFileProcess(HydraWorker.HydraWorker):
     self.file_delay = 0
     for state in [HydraWorker.STATE_IDLE, HydraWorker.STATE_PROCESSING]:
       self._sm_add_event_handler(self.state_table, state, 'setdelay', {'a': self._h_setdelay})
-    #self.state_table[HydraWorker.STATE_IDLE]['setdelay'] = {'a': self._h_setdelay}
-    #self.state_table[HydraWorker.STATE_PROCESSING]['setdelay'] = {'a': self._h_setdelay}
     
   def setFileDelay(self, delay_in_seconds):
     self.file_delay = delay_in_seconds
@@ -108,11 +106,6 @@ class HydraTestClassSlowFileProcess(HydraWorker.HydraWorker):
   def _h_setdelay(self, event, data, next_state):
     self.file_delay = data.get('payload')
     return next_state
-
-  #def handle_extended_ops(self, data):
-  #  if data.get('op') == 'setdelay':
-  #    self.file_delay = data.get('payload')
-  #  return True
 
 class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
   def setUp(self):

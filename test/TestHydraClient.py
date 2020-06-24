@@ -290,10 +290,6 @@ class TestHydraClient(unittest.TestCase):
   
   #@unittest.skip("")
   def test_4_dir_with_subdirs_splitting_work(self):
-    '''
-    This test aborts the run in the middle of processing. This causes will very
-    likely cause a partially processed directory to be returned.
-    '''
     client = HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': self.server_port, 'file_handler': HydraTestClassSlowFileProcess, 'logger_cfg': LOGGER_CONFIG})
     client.set_workers(2)
     client.start()
@@ -311,7 +307,7 @@ class TestHydraClient(unittest.TestCase):
           data = self.recv_server_msg(connection)
           self.assertIsNot(data, False)
           if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
-            self.assertEqual(data.get('state'), [HydraClient.STATE_CONNECTED, HydraClient.STATE_IDLE][i])
+            self.assertEqual(data.get('msg').get('state'), [HydraClient.STATE_CONNECTED, HydraClient.STATE_IDLE][i])
 
       for i in range(0, 3):
         cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, "dir%d"%i)]}
@@ -356,7 +352,7 @@ class TestHydraClient(unittest.TestCase):
           if cmd == HydraClient.CMD_CLIENT_STATS:
             found_stats = True
           elif cmd == HydraClient.CMD_CLIENT_STATE:
-            if data.get('state') == HydraClient.STATE_SHUTDOWN:
+            if data.get('msg').get('state') == HydraClient.STATE_SHUTDOWN:
               found_shutdown = True
               break
         if found_shutdown:
@@ -434,7 +430,7 @@ class TestHydraClient(unittest.TestCase):
         if readable:
           data = self.recv_server_msg(connection)
           self.assertIsNot(data, False)
-          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('state') == HydraClient.STATE_SHUTDOWN:
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('msg').get('state') == HydraClient.STATE_SHUTDOWN:
             shutdown_found = 1
             break
       self.assertTrue(shutdown_found >= 1)
@@ -476,7 +472,7 @@ class TestHydraClient(unittest.TestCase):
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
           if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
-            if data.get('state') == HydraClient.STATE_IDLE:
+            if data.get('msg').get('state') == HydraClient.STATE_IDLE:
               complete = True
               break
         if complete:
@@ -495,12 +491,12 @@ class TestHydraClient(unittest.TestCase):
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
           if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
-            if data.get('state') == HydraClient.STATE_IDLE:
+            if data.get('msg').get('state') == HydraClient.STATE_IDLE:
               complete = True
           elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
-            logging.getLogger().debug("Stats: %s"%data.get('stats'))
+            logging.getLogger().debug("Stats: %s"%data.get('msg').get('stats'))
           elif data.get('cmd') == HydraClient.CMD_CLIENT_REQUEST_WORK:
-            if data['worker_status']['processing'] == 0:
+            if data.get('msg')['worker_status']['processing'] == 0:
               cmd = {'op': HydraClient.EVENT_NO_WORK}
               self.send_client_msg(cmd, connection)
           else:
@@ -519,12 +515,12 @@ class TestHydraClient(unittest.TestCase):
         if readable:
           data = self.recv_server_msg(connection)
           self.assertIsNot(data, False)
-          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('state') == HydraClient.STATE_SHUTDOWN:
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('msg').get('state') == HydraClient.STATE_SHUTDOWN:
             shutdown_found = True
             break
           elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
-            self.assertEqual(1100, data['stats']['processed_files'])
-            self.assertEqual(110, data['stats']['processed_dirs'])
+            self.assertEqual(1100, data.get('msg')['stats']['processed_files'])
+            self.assertEqual(110, data.get('msg')['stats']['processed_dirs'])
           else:
             logging.getLogger().debug("Other msg: %s"%data)
 
@@ -567,7 +563,7 @@ class TestHydraClient(unittest.TestCase):
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
           if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
-            if data.get('state') == HydraClient.STATE_IDLE:
+            if data.get('msg').get('state') == HydraClient.STATE_IDLE:
               complete = True
               break
         if complete:
@@ -587,13 +583,13 @@ class TestHydraClient(unittest.TestCase):
           self.assertIsNot(data, False)
           if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
             logging.getLogger().debug("Client sent state update: %s"%data)
-            if (data.get('state') == HydraClient.STATE_IDLE) and (data.get('prev_state') in [HydraClient.STATE_PROCESSING, HydraClient.STATE_PROCESSING_WAITING]):
+            if (data.get('msg').get('state') == HydraClient.STATE_IDLE) and (data.get('msg').get('prev_state') in [HydraClient.STATE_PROCESSING, HydraClient.STATE_PROCESSING_WAITING]):
               logging.getLogger().debug("Client transitioned to idle from %s"%data.get('prev_state'))
               complete = True
           elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
-            logging.getLogger().debug("Stats: %s"%data.get('stats'))
+            logging.getLogger().debug("Stats: %s"%data.get('msg').get('stats'))
           elif data.get('cmd') == HydraClient.CMD_CLIENT_REQUEST_WORK:
-            if data['worker_status']['processing'] == 0:
+            if data.get('msg')['worker_status']['processing'] == 0:
               cmd = {'op': HydraClient.EVENT_NO_WORK}
               self.send_client_msg(cmd, connection)
             logging.getLogger().debug("Got work request: %s"%data)
@@ -614,12 +610,12 @@ class TestHydraClient(unittest.TestCase):
         if readable:
           data = self.recv_server_msg(connection)
           self.assertIsNot(data, False)
-          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('state') == HydraClient.STATE_SHUTDOWN:
+          if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('msg').get('state') == HydraClient.STATE_SHUTDOWN:
             shutdown_found = True
             break
           elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
-            self.assertEqual(1100, data['stats']['processed_files'])
-            self.assertEqual(110, data['stats']['processed_dirs'])
+            self.assertEqual(1100, data.get('msg')['stats']['processed_files'])
+            self.assertEqual(110, data.get('msg')['stats']['processed_dirs'])
           else:
             logging.getLogger().debug("Other msg: %s"%data)
 
@@ -669,7 +665,7 @@ class TestHydraClient(unittest.TestCase):
           data = self.recv_server_msg(s)
           self.assertIsNot(data, False)
           if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
-            if data.get('state') == HydraClient.STATE_IDLE:
+            if data.get('msg').get('state') == HydraClient.STATE_IDLE:
               complete += 1
               break
         if complete >= num_clients:
@@ -721,7 +717,7 @@ class TestHydraClient(unittest.TestCase):
             for i in range(num_clients):
               if connections[i] != connection:
                 work_returned = True
-                cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': data.get('data')}
+                cmd = {'op': HydraClient.EVENT_SUBMIT_WORK, 'paths': data.get('msg').get('work_items')}
                 self.send_client_msg(cmd, connections[i])
             complete += 1
             break
@@ -730,8 +726,8 @@ class TestHydraClient(unittest.TestCase):
       self.assertTrue(complete >= 1)
       self.assertTrue(work_returned)
 
-      complete = False
-      # Wait for client to report idle
+      complete = 0
+      # Wait for clients to report idle
       for i in range(100):
         readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS*5)
         for s in readable:
@@ -740,20 +736,20 @@ class TestHydraClient(unittest.TestCase):
           self.assertIsNot(data, False)
           if data.get('cmd') == HydraClient.CMD_CLIENT_STATE:
             logging.getLogger().debug("Client sent state update: %s"%data)
-            if (data.get('state') == HydraClient.STATE_IDLE) and (data.get('prev_state') in [HydraClient.STATE_PROCESSING, HydraClient.STATE_PROCESSING_WAITING]):
-              logging.getLogger().debug("Client transitioned to idle from %s"%data.get('prev_state'))
-              complete = True
+            if (data.get('msg').get('state') in [HydraClient.STATE_PROCESSING_WAITING]) and (data.get('msg').get('prev_state') in [HydraClient.STATE_PROCESSING]):
+              logging.getLogger().debug("Client transitioned to PROCESSING_WAITING from %s"%data.get('msg').get('prev_state'))
+              complete += 1
           elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
-            logging.getLogger().debug("Stats: %s"%data.get('stats'))
+            logging.getLogger().debug("Stats: %s"%data.get('msg').get('stats'))
           elif data.get('cmd') == HydraClient.CMD_CLIENT_REQUEST_WORK:
-            if data['worker_status']['processing'] == 0:
+            if data.get('msg')['worker_status']['processing'] == 0:
               cmd = {'op': HydraClient.EVENT_NO_WORK}
-              self.send_client_msg(cmd, connection)
+              self.send_client_msg(cmd, s)
             logging.getLogger().debug("Got work request: %s"%data)
           else:
             logging.getLogger().debug("Received interim cmd: %s"%data)
             
-        if complete:
+        if complete >= num_clients:
           break
 
       # Send shutdown
@@ -763,6 +759,7 @@ class TestHydraClient(unittest.TestCase):
         self.send_client_msg(cmd, connections[i])
       
       shutdown_found = 0
+      client_stats = {}
       processed_files = 0
       processed_dirs = 0
       for i in range(20):
@@ -774,16 +771,18 @@ class TestHydraClient(unittest.TestCase):
           for conn in readable:
             data = self.recv_server_msg(conn)
             self.assertIsNot(data, False)
-            if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('state') == HydraClient.STATE_SHUTDOWN:
+            if data.get('cmd') == HydraClient.CMD_CLIENT_STATE and data.get('msg').get('state') == HydraClient.STATE_SHUTDOWN:
               shutdown_found += 1
               inputs.remove(conn)
               if shutdown_found >= num_clients:
                 break
             elif data.get('cmd') == HydraClient.CMD_CLIENT_STATS:
-              processed_files += data['stats']['processed_files']
-              processed_dirs += data['stats']['processed_dirs']
+              client_stats[conn] = data.get('msg')['stats']
             else:
               logging.getLogger().debug("Other msg: %s"%data)
+      for c in client_stats:
+        processed_files += client_stats[c]['processed_files']
+        processed_dirs += client_stats[c]['processed_dirs']
       self.assertTrue(shutdown_found >= num_clients)
       self.assertEqual(1100, processed_files)
       self.assertEqual(111, processed_dirs)

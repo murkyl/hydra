@@ -144,12 +144,12 @@ class TestHydraServer(unittest.TestCase):
     cls.rand_buffer = None
     cls = None
 
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_1_spawn_server_and_shutdown(self):
     svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
     
-    svr.send({'cmd': HydraServer.EVENT_SHUTDOWN})
+    svr.send(HydraServer.EVENT_SHUTDOWN)
     svr.join(5)
     try:
       self.assertFalse(svr.is_alive())
@@ -157,7 +157,7 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
 
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_2_single_client_connection_and_shutdown(self):
     svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
@@ -168,7 +168,7 @@ class TestHydraServer(unittest.TestCase):
     
     logging.getLogger().debug("Waiting 2 seconds for clients to connect before shutdown")
     time.sleep(2)
-    svr.send({'cmd': HydraServer.EVENT_SHUTDOWN})
+    svr.send(HydraServer.EVENT_SHUTDOWN)
     
     logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
@@ -178,7 +178,7 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
   
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_3_multiple_client_connection_and_shutdown(self):
     svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
@@ -191,7 +191,7 @@ class TestHydraServer(unittest.TestCase):
     
     logging.getLogger().debug("Waiting 2 seconds for clients to connect before shutdown")
     time.sleep(2)
-    svr.send({'cmd': HydraServer.EVENT_SHUTDOWN})
+    svr.send(HydraServer.EVENT_SHUTDOWN)
     
     logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
@@ -201,7 +201,7 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
       
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_4_single_client_single_dir(self):
     svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
@@ -216,39 +216,39 @@ class TestHydraServer(unittest.TestCase):
     for i in range(40):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
-        cmd = svr.recv()
-        if cmd['cmd'] == 'state':
-          if cmd['state'] == HydraServer.STATE_IDLE:
+        data = svr.recv()
+        if data['cmd'] == HydraServer.CMD_SVR_STATE:
+          if data['msg']['state'] == HydraServer.STATE_IDLE:
             found = True
             break
-    self.assertTrue(found, msg="Server never returned to idle state")
+    self.assertTrue(found, msg="Server never went idle")
     
     found = False
     logging.getLogger().debug("Submitting work")
-    svr.send({'cmd': HydraServer.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir0')]})
+    svr.send(HydraServer.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir0')]})
     for i in range(40):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if readable:
-        cmd = svr.recv()
-        if cmd['cmd'] == 'state':
-          if cmd['state'] == HydraServer.STATE_IDLE:
+        data = svr.recv()
+        if data['cmd'] == 'state':
+          if data['msg']['state'] in [HydraServer.STATE_IDLE]:
             found = True
             break
       else:
         break
-    self.assertTrue(found, msg="Server never returned to idle state")
+    self.assertTrue(found, msg="Server never returned to idle state after work submission")
 
     logging.getLogger().debug("Server is idle. Requesting shutdown")
-    svr.send({'cmd': HydraServer.EVENT_SHUTDOWN})
+    svr.send(HydraServer.EVENT_SHUTDOWN)
     
     logging.getLogger().debug("Waiting for final stats update")
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
-        cmd = svr.recv()
-        if cmd['cmd'] == HydraServer.CMD_SVR_STATS:
-          self.assertEqual(cmd['stats']['processed_files'], 110)
-          self.assertEqual(cmd['stats']['processed_dirs'], 11)
+        data = svr.recv()
+        if data['cmd'] == HydraServer.CMD_SVR_STATS:
+          self.assertEqual(data['msg']['stats']['processed_files'], 110)
+          self.assertEqual(data['msg']['stats']['processed_dirs'], 11)
           break
     logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
@@ -258,7 +258,7 @@ class TestHydraServer(unittest.TestCase):
       svr.terminate()
       raise
 
-  @unittest.skip("")
+  #@unittest.skip("")
   def test_5_multiple_client_2_worker_multiple_dir(self):
     svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr.start()
@@ -276,14 +276,14 @@ class TestHydraServer(unittest.TestCase):
     
     logging.getLogger().debug("Submitting work")
     for i in range(num_test_dirs):
-      svr.send({'cmd': HydraServer.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
+      svr.send(HydraServer.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
     found = False
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
-        cmd = svr.recv()
-        if cmd['cmd'] == 'state':
-          if cmd['state'] == HydraServer.STATE_PROCESSING:
+        data = svr.recv()
+        if data['cmd'] == 'state':
+          if data['msg']['state'] == HydraServer.STATE_PROCESSING:
             found = True
             break
     self.assertTrue(found, msg="Server never sent state change to processing state")
@@ -292,23 +292,23 @@ class TestHydraServer(unittest.TestCase):
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
-        cmd = svr.recv()
-        if cmd['cmd'] == 'state':
-          if cmd['state'] == HydraServer.STATE_IDLE:
+        data = svr.recv()
+        if data['cmd'] == 'state':
+          if data['msg']['state'] == HydraServer.STATE_IDLE:
             found = True
             break
     self.assertTrue(found, msg="Server never returned to idle state")
     logging.getLogger().debug("Server is idle. Shutting down.")
-    svr.send({'cmd': HydraServer.EVENT_SHUTDOWN})
+    svr.send(HydraServer.EVENT_SHUTDOWN)
     
     logging.getLogger().debug("Waiting for final stats update")
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
-        cmd = svr.recv()
-        if cmd['cmd'] == 'stats':
-          self.assertEqual(cmd['stats']['processed_files'], (num_test_dirs)*files_per_test_dir)
-          self.assertEqual(cmd['stats']['processed_dirs'], (num_test_dirs)*dirs_per_test_dir)
+        data = svr.recv()
+        if data['cmd'] == HydraServer.CMD_SVR_STATS:
+          self.assertEqual(data['msg']['stats']['processed_files'], (num_test_dirs)*files_per_test_dir)
+          self.assertEqual(data['msg']['stats']['processed_dirs'], (num_test_dirs)*dirs_per_test_dir)
           break
     logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
@@ -345,14 +345,14 @@ class TestHydraServer(unittest.TestCase):
     
     logging.getLogger().debug("Submitting work")
     for i in range(num_test_dirs):
-      svr.send({'cmd': HydraServer.EVENT_SUBMIT_WORK, 'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
+      svr.send(HydraServer.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
     found = False
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
-        cmd = svr.recv()
-        if cmd['cmd'] == 'state':
-          if cmd['state'] == HydraServer.STATE_PROCESSING:
+        data = svr.recv()
+        if data['cmd'] == HydraServer.CMD_SVR_STATE:
+          if data['msg']['state'] == HydraServer.STATE_PROCESSING:
             found = True
             break
     self.assertTrue(found, msg="Server never sent state change to processing state")
@@ -361,27 +361,27 @@ class TestHydraServer(unittest.TestCase):
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
-        cmd = svr.recv()
-        if cmd['cmd'] == 'state':
-          if cmd['state'] == HydraServer.STATE_IDLE:
+        data = svr.recv()
+        if data['cmd'] == HydraServer.CMD_SVR_STATE:
+          if data['msg']['state'] == HydraServer.STATE_IDLE:
             found = True
             break
     self.assertTrue(found, msg="Server never sent state change to idle state")
             
     logging.getLogger().debug("Server is idle. Get individual client stats then shutdown")
-    svr.send({'cmd': HydraServer.EVENT_QUERY_STATS, 'data': 'individual'})
+    svr.send(HydraServer.EVENT_QUERY_STATS, {'data': 'individual'})
     logging.getLogger().debug("Shutting down")
-    svr.send({'cmd': HydraServer.EVENT_SHUTDOWN})
+    svr.send(HydraServer.EVENT_SHUTDOWN)
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
-        cmd = svr.recv()
-        if cmd['cmd'] == HydraServer.CMD_SVR_STATS_INDIVIDUAL:
-          logging.getLogger().debug("Individual client stat: %s"%cmd['stats'])
-        elif cmd['cmd'] == HydraServer.CMD_SVR_STATS:
-            logging.getLogger().debug("Final server stats: %s"%cmd['stats'])
-            self.assertEqual(cmd['stats']['processed_files'], (num_test_dirs)*files_per_test_dir)
-            self.assertEqual(cmd['stats']['processed_dirs'], (num_test_dirs)*dirs_per_test_dir)
+        data = svr.recv()
+        if data['cmd'] == HydraServer.CMD_SVR_STATS_INDIVIDUAL:
+          logging.getLogger().debug("Individual client stat: %s"%data['msg']['stats'])
+        elif data['cmd'] == HydraServer.CMD_SVR_STATS:
+            logging.getLogger().debug("Final server stats: %s"%data['msg']['stats'])
+            self.assertEqual(data['msg']['stats']['processed_files'], (num_test_dirs)*files_per_test_dir)
+            self.assertEqual(data['msg']['stats']['processed_dirs'], (num_test_dirs)*dirs_per_test_dir)
             break
       else:
         break
