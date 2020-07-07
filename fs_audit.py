@@ -158,6 +158,8 @@ DEFAULT_STATS_CONFIG = {
 # Additional simple counting stats. Adding stats here requires the code below to
 # increment the counters somewhere.
 EXTRA_BASIC_STATS = [
+  'error_stat_dirs',                        # Number of directory stat errors
+  'error_stat_files',                       # Number of file stat errors
   'file_size_total',                        # Total logical bytes used by all files
   'file_size_block_total',                  # Total logical bytes used by all files on block boundaries
   'dir_depth_total',                        # Sum of the depth of every directory. Used to calculate the average directory depth
@@ -293,7 +295,11 @@ def divide_per_depth(data1, data2, divbyzero=0):
     data2.extend([0]*(l1 - l2 + 1))
   return [(x/y if y else divbyzero) for x, y in zip(data1, data2)]
   
-def path_depth(path):
+def path_depth(path, prefix=[]):
+  if len(prefix) > 0:
+    for p in prefix:
+      if path.find(p) == 0:
+        path = path[len(p):]
   ppath = pathlib.PurePath(path)
   return len(ppath.parents)
 
@@ -460,7 +466,7 @@ class WorkerHandler(HydraWorker.HydraWorker):
     num_files = len(files)
     if num_dirs:
       self.stats['parent_dirs_total'] += 1
-    self.ppath_len = path_depth(root) - self.args['path_depth_adj']
+    self.ppath_len = path_depth(root, self.ppath_prefix) - self.ppath_adj
     self.stats['dir_depth_total'] += self.ppath_len
     if num_dirs > self.stats['max_dir_width']:
       self.stats['max_dir_width'] = num_dirs
@@ -477,6 +483,9 @@ class WorkerHandler(HydraWorker.HydraWorker):
     Check to see if this directory is actually a symbolic link and filter out
     if necessary
     """
+    if self.ppath_prefix_len:
+      prefix = self.ppath_prefix[self.ppath_prefix_idx%self.ppath_prefix_len]
+      dir = os.path.join(prefix, dir)
     try:
       dir_lstats = os.lstat(dir)
     except WindowsError as e:
@@ -487,7 +496,11 @@ class WorkerHandler(HydraWorker.HydraWorker):
           self.log.error('Directory contains invalid characters or invalid names for Windows: %s'%dir)
         else:
           self.log.exception(e)
+      self.stats['error_stat_dirs'] += 1
       return True
+    except Exception as e:
+      self.log.exception(e)
+      self.stats['error_stat_dirs'] += 1
     if stat.S_ISLNK(dir_lstats.st_mode):
       # We do not want to process a symlink so account for it here as a symlink
       self.stats['symlink_dirs'] += 1
@@ -511,6 +524,10 @@ class WorkerHandler(HydraWorker.HydraWorker):
           self.log.error('File contains invalid characters or invalid names for Windows: %s'%full_path_file)
         else:
           self.log.exception(e)
+      self.stats['error_stat_files'] += 1
+      return False
+    except Exception as e:
+      self.stats['error_stat_files'] += 1
       return False
     finally:
       time_check_2 = time.process_time()
@@ -601,6 +618,7 @@ class WorkerHandler(HydraWorker.HydraWorker):
   def handle_update_settings(self, cmd):
     self.args.update(cmd['settings'])
     if self.args.get('prefix_paths'):
+      self.ppath_adj = self.args.get('path_depth_adj')
       self.ppath_prefix = self.args.get('prefix_paths')
       self.ppath_prefix_len = len(self.ppath_prefix)
       # TODO: Maybe use a rng or other method to determine starting idx instead
