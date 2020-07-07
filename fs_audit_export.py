@@ -65,6 +65,7 @@ CELL_FORMAT_STRINGS = {
   'gt_base2_gb':    {'align': 'right', 'num_format': '[<1048576]"> "#0.00," KiB";[<1073741824]"> "#0.00,," MiB";"> "#0.00,,," GiB"'},
   'lt_base10_gb':   {'align': 'right', 'num_format': '[<1000000]"<= "#0.00," KB";[<1000000000]"<= "#0.00,," MB";"<= "#0.00,,," GB"'},
   'lt_base2_gb':    {'align': 'right', 'num_format': '[<1048576]"<= "#0.00," KiB";[<1073741824]"<= "#0.00,," MiB";"<= "#0.00,,," GiB"'},
+  'ww_r':           {'align': 'right', 'text_wrap': True},
 }
 
 def get_cell_format(workbook, format_name, format_dict=None):
@@ -683,7 +684,7 @@ def insert_summary(data, document, worksheet=None, cfg={}, row=0, col=0):
     {'l': 'Block size (bytes)',             'd': gconf('block_size')},
     {'l': 'Number of worker processes',     'd': gbasic('num_workers')},
     {'l': 'Scanned path(s)',                'd': '\n'.join(gbasic('work_paths', [])), 'h': 15*len(gbasic('work_paths', ['']))},
-    {'l': 'Prefix path(s)',                 'd': '\n'.join(gother('prefix_paths', [])),  'h': 15*len(gother('prefix_paths', ['']))},
+    {'l': 'Prefix path(s)',                 'd': '\n'.join(gother('prefix_paths', [])), 'f': 'ww_r', 'h': 15*len(gother('prefix_paths', ['']))},
     {'t': ''},
     {'t': 'Processing summary'},
     {'l': 'Files processed/second',         'd': sdiv(gbasic('processed_files'), gbasic('time_client_processing')), 'f': '2_decimal'},
