@@ -22,7 +22,7 @@
 # THE SOFTWARE.
 
 # Modify the options below to match your environment
-PROCESS_PATH="/ifs/3m"
+PROCESS_PATH="/ifs/some/path"
 BASE_PATH=/ifs/scripts/exec_cmd
 LOG_PATH=/ifs/scripts/exec_cmd_logs
 CLIENT_OPTIONS="-v"

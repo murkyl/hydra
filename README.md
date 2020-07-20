@@ -1,7 +1,7 @@
 # hydra
 Parallel file system walker framework
 
-Overview
+# Overview
 
 Hydra is has a client/server model for operation. The server does not do any actual processing but instead coordinates
  directories to process between one or more clients. The client and server communications are performed over raw TCP
@@ -47,7 +47,7 @@ Conversely, operations that require long processing time per file will benefit f
  clients and number of workers per client.
 
 
-Logging
+# Logging
 
 The default Python logger is used to handle logging from the different modules. The different loggers can be
  accessed by the name of the module: HydraWorker, HydraClient or HydraServer. e.g. logging.getLogger('HydraClient').
@@ -69,3 +69,18 @@ By default, the local loopback address of 127.0.0.1 and a random listening port 
 The client will use its configured logger to emit the messages from the workers along with its own messages.
 
 The server uses a standard Python logger.
+
+
+# Licenses
+
+The main code is licensed under the MIT License. Please see the LICENSE file for details on the license.
+
+## 3rd party libraries
+
+### Core script
+
+scandir - lib/scandir_src/LICENSE.txt
+
+### Examples
+
+XlsxWriter - examples/fs_audit/lib/xlsxwriter/LICENSE.txt - https://xlsxwriter.readthedocs.io/

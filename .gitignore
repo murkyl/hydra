@@ -50,7 +50,7 @@ coverage.xml
 test/data/
 *.log
 *.log.*
-examples/fs_audit/mongodb
+examples/fs_audit/tests/
 
 # Translations
 *.mo
