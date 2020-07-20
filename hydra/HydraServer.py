@@ -40,9 +40,9 @@ except:
    import pickle
 import zlib
 from collections import deque
-import HydraClient
-import HydraWorker
-import HydraUtils
+from . import HydraClient
+from . import HydraWorker
+from . import HydraUtils
 
 # Possible state machine states. Sub states are split using the _ character
 STATE_IDLE = 'idle'
@@ -114,6 +114,7 @@ HYDRA_SERVER_STATE_TABLE = {
       EVENT_QUERY_STATS:      {'a': '_h_query_stats',         'ns': None},
       EVENT_SUBMIT_WORK:      {'a': '_h_submit_work',         'ns': None},
       EVENT_SHUTDOWN:         {'a': '_h_shutdown',            'ns': STATE_SHUTDOWN_PENDING},
+      EVENT_SHUTDOWN_COMPLETE:{'a': '_h_no_op',               'ns': STATE_SHUTDOWN},
       EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',     'ns': None},
   },
   STATE_SHUTDOWN: {
@@ -157,6 +158,7 @@ class HydraServer(object):
     self.init_stats(self.stats)
     self._init_state_table(HYDRA_SERVER_STATE_TABLE)
     self.work_paths = []
+    self.log.critical("SVR CRIT")
     
     # Variables dealing with server and client communication
     self.server = None
@@ -413,6 +415,7 @@ class HydraServer(object):
           self.log.exception(e)
           break
     self.log.debug("Server exiting")
+    self._shutdown_cleanup()
   
   ''' Internal methods '''
   def _connect_ui(self):
@@ -662,6 +665,26 @@ class HydraServer(object):
         self._shutdown_client(c)
     else:
       self.event_queue.append({'c': EVENT_SHUTDOWN_COMPLETE, 'd': None})
+  
+  def _shutdown_cleanup(self):
+    try:
+      self.svr_side_conn.shutdown(socket.SHUT_RDWR)
+      self.svr_side_conn.close()
+    except:
+      pass
+    self.svr_side_conn = None
+    try:
+      self.ui_side_conn.shutdown(socket.SHUT_RDWR)
+      self.ui_side_conn.close()
+    except:
+      pass
+    self.ui_side_conn = None
+    try:
+      self.server.shutdown(socket.SHUT_RDWR)
+      self.server.close()
+    except:
+      pass
+    self.server = None
 
   # State machine methods
   def _init_state_table(self, state_dict):
@@ -806,7 +829,7 @@ class HydraServerProcess(multiprocessing.Process):
     return self.server.fileno()
     
   def init_process_logging(self):
-    if len(logging.getLogger().handlers) == 0:
+    if not len(logging.getLogger().handlers):
       if self.args.get('logger_cfg'):
         logging.config.dictConfig(self.args['logger_cfg'])
   

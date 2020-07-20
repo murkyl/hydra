@@ -41,8 +41,8 @@ except:
    import pickle
 import zlib
 from collections import deque
-import HydraWorker
-import HydraUtils
+from . import HydraWorker
+from . import HydraUtils
 
 
 # Possible state machine states. Sub states are split using the _ character
@@ -196,9 +196,9 @@ class HydraClient(object):
     self.args = dict(args)
     self.log = logging.getLogger(__name__)
     self.log_svr = None
-    self.log_addr = HydraUtils.LOOPBACK_ADDR
-    self.log_port = HydraUtils.LOOPBACK_PORT
-    self.log_secret = None
+    self.log_addr = args.get('logger_cfg', {}).get('host', HydraUtils.LOOPBACK_ADDR)
+    self.log_port = args.get('logger_cfg', {}).get('port', HydraUtils.LOOPBACK_PORT)
+    self.log_secret = args.get('logger_cfg', {}).get('secret', None)
     self.heartbeat_interval = args.get('heartbeat_interval', HydraUtils.HEARTBEAT_INTERVAL)                   # Seconds for each heartbeat
     self.idle_shutdown_interval = args.get('idle_shutdown_interval', HydraUtils.IDLE_SHUTDOWN_THRESHOLD)      # Number of idle heartbeats before forcing a pending shutdown
     self.dirs_per_idle_worker = args.get('dirs_per_idle_worker', HydraUtils.DIRS_PER_IDLE_WORKER)
@@ -217,7 +217,7 @@ class HydraClient(object):
     self.server_waiting_for_work = False
     
     self.work_queue = deque()
-    self._init_logger()
+    self._init_logger(self.log_addr, self.log_port)
     self.init_stats(self.stats)
     self._init_state_table(HYDRA_CLIENT_STATE_TABLE)
 
@@ -341,9 +341,15 @@ class HydraClient(object):
     Fill in docstring
     """
     for w in range(num):
-      worker_args = dict(self.args)
-      worker_args['logger_config'] = worker_args['logger_worker_config']
-      worker = self.worker_base_class(worker_args)
+      cfg = dict(self.args)
+      cfg.update(
+        {
+          'host': self.log_addr,
+          'port': self.log_port,
+          'secret': self.log_secret,
+        }
+      )
+      worker = self.worker_base_class(cfg)
       self.inputs.append(worker)
       self._init_worker_state(worker)
       self.num_workers += 1
@@ -413,6 +419,7 @@ class HydraClient(object):
     idle_count = 0
     start_time = time.time()
     self.init_process()
+    root = logging.getLogger()
     while not (self.state == STATE_SHUTDOWN):
       readable = []
       exceptional = []
@@ -592,28 +599,14 @@ class HydraClient(object):
       self._send_server_stats()
       self._get_worker_stats()
     
-  def _init_logger(self):
-    self.log_svr = HydraUtils.LogRecordStreamHandler(
+  def _init_logger(self, addr, port):
+    self.log_svr = HydraUtils.LogRecordStreamServer(
         name=__name__,
-        addr = self.log_addr,
-        port = self.log_port,
+        addr = addr,
+        port = port,
     )
     self.log_port = self.log_svr.get_port()
     self.log_secret = self.log_svr.get_secret()
-    # Create a worker logging configuration
-    self.args['logger_worker_config'] = dict(HydraUtils.LOGGING_WORKER_CONFIG)
-    HydraUtils.set_logger_handler_to_socket(
-        self.args['logger_worker_config'],
-        'default',
-        host=self.log_addr,
-        port=self.log_port,
-        secret=self.log_secret,
-    )
-    HydraUtils.set_logger_logger_level(
-        self.args['logger_worker_config'],
-        '',
-        self.log.level,
-    )
     self.log_svr.start_logger()
     
   def _init_worker_state(self, worker):
@@ -651,10 +644,8 @@ class HydraClient(object):
     # If we have fewer queued work items compared to idle workers, just send
     # each worker 1 work item until we run out
     split = (queue_len)//(len(idle))
-    if split > self.dirs_per_idle_worker:
-      split = self.dirs_per_idle_worker
-    elif split <= 0:
-      split = 1
+    # Branchless version of if split <= self.dirs_per_idle_worker then split = 1 else split = self.dirs_per_idle_worker
+    split = (split > self.dirs_per_idle_worker)*self.dirs_per_idle_worker + (split <= self.dirs_per_idle_worker)*1
     self.log.log(5, 'Work split: %d'%split)
     for k in idle:
       if self.workers.get(k, {})['state'] == 'idle':
@@ -936,7 +927,7 @@ class HydraClientProcess(multiprocessing.Process):
     self.client = None
     
   def init_process_logging(self):
-    if len(logging.getLogger().handlers) == 0:
+    if not len(logging.getLogger().handlers):
       if self.args.get('logger_cfg'):
         logging.config.dictConfig(self.args['logger_cfg'])
   

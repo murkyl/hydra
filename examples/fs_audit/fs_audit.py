@@ -4,7 +4,7 @@ __version__ = "2.0.0"
 __all__ = []
 __author__ = "Andrew Chung <acchung@gmail.com>"
 __license__ = "MIT"
-__copyright__ = """Copyright 2019,2020 Andrew Chung
+__copyright__ = """Copyright 2019-2020 Andrew Chung
 Permission is hereby granted, free of charge, to any person obtaining a copy of 
 this software and associated documentation files (the "Software"), to deal in 
 the Software without restriction, including without limitation the rights to 
@@ -21,38 +21,48 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, 
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE 
 SOFTWARE."""
-__usage__="""%prog [options]"""
+__usage__="""{p} [options]""".format(p=__title__)
 __description__="""====================
 Requirements:
   python 2.7+
   pymongo (optional)
-====================
-"""
+  pywin32 (optional on Windows platforms)
+===================="""
 
 import inspect
 import os
 import sys
 import multiprocessing
 import time
-import datetime
 import logging
 import socket
 import select
 import optparse
-import HydraUtils
+try:
+  import hydra
+except:
+  # Example code is run from the examples directory. Add the parent directory to the path
+  current_file = inspect.getfile(inspect.currentframe())
+  base_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(current_file))))
+  sys.path.insert(0, base_path)
+  import hydra
+try:
+  import pymongo
+except:
+  pymongo = None
+try:
+  dir(time.process_time)
+except:
+  time.process_time = time.clock
+# On Windows systems check for WindowsError for platform specific exception handling
+try:
+  dir(WindowsError)
+except:
+  class WindowsError(OSError): pass
+# EXAMPLE:
+# Add any additional imports
 import stat
 import json
-import fs_audit_export
-import HydraWorker
-import HydraClient
-import HydraServer
-from HistogramStat import HistogramStat
-from HistogramStat import HistogramStatCountAndValue
-from HistogramStat import HistogramStat2D
-from HistogramStat import HashBinCountAndValue
-from HistogramStat import RankItems
-from HistogramStat import RankItemsByKey
-from HistogramStat import get_file_category
 try:
   import pathlib
 except:
@@ -67,19 +77,14 @@ except:
       if len(p) > 0 and p[0] == '.':
         del p[0]
       return pathlib(p)
-try:
-  import pymongo
-except:
-  pymongo = None
-try:
-  dir(time.process_time)
-except:
-  time.process_time = time.clock
-# On Windows systems check for WindowsError for platform specific exception handling
-try:
-  dir(WindowsError)
-except:
-  class WindowsError(OSError): pass
+import fs_audit_export
+from HistogramStat import HistogramStat
+from HistogramStat import HistogramStatCountAndValue
+from HistogramStat import HistogramStat2D
+from HistogramStat import HashBinCountAndValue
+from HistogramStat import RankItems
+from HistogramStat import RankItemsByKey
+from HistogramStat import get_file_category
 # Try to import Windows libraries to get SID
 try:
   import win32api
@@ -214,32 +219,261 @@ EVENT_ALL_CLIENTS_CONN = 'all_clients_connected'
 STATE_DB_CONSOLIDATE = 'db_consolidate'
 FS_AUDIT_CLIENT_STATES = {
   STATE_DB_CONSOLIDATE: {
-    HydraClient.EVENT_HEARTBEAT:        {'a': '_h_no_op',             'ns': None},
-    HydraClient.EVENT_NO_WORK:          {'a': '_h_no_op',             'ns': None},
-    HydraClient.EVENT_QUERY_STATS:      {'a': '_h_query_stats',       'ns': None},
-    HydraClient.EVENT_REQUEST_WORK:     {'a': '_h_no_op',             'ns': None},
-    HydraClient.EVENT_RETURN_WORK:      {'a': '_h_no_op',             'ns': None},
-    HydraClient.EVENT_SHUTDOWN:         {'a': '_h_shutdown',          'ns': HydraClient.STATE_SHUTDOWN},
-    HydraClient.EVENT_SUBMIT_WORK:      {'a': '_h_no_op',             'ns': None},
-    HydraClient.EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',   'ns': None},
-    HydraClient.EVENT_WORKER_STATE:     {'a': '_h_w_state',           'ns': None},
-    HydraClient.EVENT_WORKER_STATS:     {'a': '_h_w_stats',           'ns': None},
+    hydra.Client.EVENT_HEARTBEAT:        {'a': '_h_no_op',             'ns': None},
+    hydra.Client.EVENT_NO_WORK:          {'a': '_h_no_op',             'ns': None},
+    hydra.Client.EVENT_QUERY_STATS:      {'a': '_h_query_stats',       'ns': None},
+    hydra.Client.EVENT_REQUEST_WORK:     {'a': '_h_no_op',             'ns': None},
+    hydra.Client.EVENT_RETURN_WORK:      {'a': '_h_no_op',             'ns': None},
+    hydra.Client.EVENT_SHUTDOWN:         {'a': '_h_shutdown',          'ns': hydra.Client.STATE_SHUTDOWN},
+    hydra.Client.EVENT_SUBMIT_WORK:      {'a': '_h_no_op',             'ns': None},
+    hydra.Client.EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',   'ns': None},
+    hydra.Client.EVENT_WORKER_STATE:     {'a': '_h_w_state',           'ns': None},
+    hydra.Client.EVENT_WORKER_STATS:     {'a': '_h_w_stats',           'ns': None},
   },
 }
 FS_AUDIT_SVR_STATES = {
   STATE_DB_CONSOLIDATE: {
     EVENT_STATS_DB:                     {'a': '_h_stats_db_received', 'ns': None},
     EVENT_ALL_CLIENTS_CONN:             {'a': '_h_all_clients_conn',  'ns': None},
-    HydraServer.EVENT_CLIENT_CONNECTED: {'a': '_h_client_connect',    'ns': None},
-    HydraServer.EVENT_CLIENT_STATE:     {'a': '_h_client_state',      'ns': None},
-    HydraServer.EVENT_CLIENT_STATS:     {'a': '_h_client_stats',      'ns': None},
-    HydraServer.EVENT_HEARTBEAT:        {'a': '_h_heartbeat',         'ns': None},
-    HydraServer.EVENT_QUERY_STATS:      {'a': '_h_query_stats',       'ns': None},
-    HydraServer.EVENT_SHUTDOWN:         {'a': '_h_shutdown',          'ns': HydraServer.STATE_SHUTDOWN_PENDING},
-    HydraServer.EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',   'ns': None},
+    hydra.Server.EVENT_CLIENT_CONNECTED: {'a': '_h_client_connect',    'ns': None},
+    hydra.Server.EVENT_CLIENT_STATE:     {'a': '_h_client_state',      'ns': None},
+    hydra.Server.EVENT_CLIENT_STATS:     {'a': '_h_client_stats',      'ns': None},
+    hydra.Server.EVENT_HEARTBEAT:        {'a': '_h_heartbeat',         'ns': None},
+    hydra.Server.EVENT_QUERY_STATS:      {'a': '_h_query_stats',       'ns': None},
+    hydra.Server.EVENT_SHUTDOWN:         {'a': '_h_shutdown',          'ns': hydra.Server.STATE_SHUTDOWN_PENDING},
+    hydra.Server.EVENT_UPDATE_SETTINGS:  {'a': '_h_update_settings',   'ns': None},
   },
 }
 
+LOGGER_CONFIG = {
+  'version': 1,
+  'disable_existing_loggers': False,
+  'formatters': {
+    'default': {
+      'format': '%(asctime)s [%(levelname)8s] %(name)s - %(process)d : %(message)s',
+    },
+    'debug': {
+      'format': '%(asctime)s [%(levelname)8s] %(name)s [%(funcName)s (%(lineno)d)] - %(process)d : %(message)s',
+    },
+    'simple': {
+      'format': '%(message)s',
+    },
+    'stats': {
+      'format': '%(asctime)s: %(message)s',
+    },
+  },
+  'handlers': {
+    'default': { 
+      'formatter': 'default',
+      'class': 'logging.StreamHandler',
+      'stream': 'ext://sys.stdout',
+    },
+    'file': {
+      'formatter': 'default',
+      'class': 'logging.handlers.RotatingFileHandler',
+      'delay': True,
+      'filename': '',
+      'backupCount': 5,
+    },
+    'audit': {
+      'formatter': 'simple',
+      'class': 'logging.handlers.RotatingFileHandler',
+      'delay': True,
+      'filename': '',
+      'backupCount': 5,
+    },
+    'stats': {
+      'formatter': 'stats',
+      'class': 'logging.StreamHandler',
+      'stream': 'ext://sys.stdout',
+    }
+  },
+  'loggers': {
+    '': {
+      'handlers': ['default'],
+      'level': 'WARN',
+    },
+    'hydra': {
+      'level': 100,   # Skip logging unless --debug and --verbose flags are set
+    },
+    'audit': {
+      'level': 'INFO',
+    },
+    'stats': {
+      'handlers': ['stats'],
+      'level': 'INFO',
+    }
+  }
+}
+
+
+def ConfigureLogging(options):
+  log_level = logging.WARN
+  if options.verbose:
+    log_level = logging.INFO
+  # Turn off stats output to console if --quiet is set or if there is no logging to file, otherwise duplicate
+  # stats output to the console occurs
+  if options.quiet or not options.log:
+    LOGGER_CONFIG['loggers']['stats']['handlers'] = []
+  if options.debug > 2:
+    log_level = 5
+  elif options.debug > 1:
+    log_level = 9
+  elif options.debug > 0:
+    log_level = logging.DEBUG
+  LOGGER_CONFIG['loggers']['']['level'] = log_level
+  if options.verbose and options.debug > 0:
+    LOGGER_CONFIG['loggers']['hydra']['level'] = log_level
+  if log_level <= logging.DEBUG:
+    LOGGER_CONFIG['handlers']['default']['formatter'] = 'debug'
+  if options.log:
+    LOGGER_CONFIG['loggers']['']['handlers'] = ['file']
+    LOGGER_CONFIG['handlers']['file']['filename'] = options.log
+  if options.audit:
+    LOGGER_CONFIG['loggers']['audit']['handlers'] = ['audit']
+    LOGGER_CONFIG['handlers']['audit']['filename'] = options.audit
+  logging.config.dictConfig(LOGGER_CONFIG)
+  log = logging.getLogger()
+  # Perform log rollover after logging system is initialized
+  if options.log:
+    log.handlers[0].doRollover()
+  if options.audit:
+    logging.getLogger('audit').handlers[0].doRollover()
+  return log
+
+'''
+Add command line options
+'''
+def AddParserOptions(parser, raw_cli):
+    parser.add_option("--port",
+                      default=hydra.Utils.DEFAULT_LISTEN_PORT,
+                      help="Port to listen when running as a server and port to connect to as a client.")
+    op_group = optparse.OptionGroup(parser, "Server settings")
+    op_group.add_option("--server", "-s",
+                      action="store_true",
+                      default=False,
+                      help="Act as the Hydra server.")
+    op_group.add_option("--listen",
+                      default=None,
+                      help="IP address to bind to when run as a server. The default will listen to all interfaces.")
+    parser.add_option_group(op_group)
+
+    op_group = optparse.OptionGroup(parser, "Client settings")
+    op_group.add_option("--connect", "-c",
+                      default=None,
+                      help="FQDN or IP address of the Hydra server.")
+    op_group.add_option("--num_workers", "-n",
+                      type="int",
+                      default=0,
+                      help="For clients, specifies the number of worker processes to launch. A value of 0 will have"
+                           " the system set this to the number of CPU cores available. [Default: %default]")
+    parser.add_option_group(op_group)
+
+    op_group = optparse.OptionGroup(parser, "Processing",
+                           "Options for processing.")
+    op_group.add_option("--path", "-p",
+                      default=None,
+                      action="store",
+                      help="Path to scan. Use of full paths is recommended as "
+                           "clients will interpret this path according to their"
+                           " own current working directory.")
+    op_group.add_option("--path_file", "-f",
+                      default=None,
+                      help="File name with a CR/LF separated list of paths to process. Any leading or trailing "
+                           "whitespace is preserved.")
+    op_group.add_option("--path_prefix_file",
+                      default=None,
+                      action="store",
+                      help="Path to a file holding prefixes to prepend to "
+                           "the path specified by the --path parameters. This "
+                           "can be used to allow this client to process the "
+                           "directory walk across parallel mounts/shares to "
+                           "improve directory walk performance.")
+    op_group.add_option("--stat_consolidate",
+                      type="int",
+                      default=0,
+                      help="Instead of scanning a directory path, process data from existing database information."
+                           " Using this option will prevent an actual tree walk. If a path is specified as well the"
+                           " path will be used to adjust for the path depth calculation only. This argument takes"
+                           " the number of clients/databases to process. This number should be the same as the"
+                           " number of clients used to walk the file system initially.")
+    op_group.add_option("--excel_output",
+                      default=None,
+                      help="Specify a file name here to output stats results to an Excel formatted file")
+    parser.add_option_group(op_group)
+
+    op_group = optparse.OptionGroup(parser, "DB options")
+    db_type_choices = ["mongodb"]
+    op_group.add_option("--db_type",
+                      type="choice",
+                      default=None,
+                      choices=db_type_choices,
+                      help="DB type if any to use for storing stats [Choices: %s]"%(','.join(db_type_choices)))
+    op_group.add_option("--db_name",
+                      default=None,
+                      help="Name of the MongoDB database to perform operations")
+    op_group.add_option("--db_host",
+                      default='127.0.0.1',
+                      help="Host of MongoDB instance [Default: %default]")
+    op_group.add_option("--db_port",
+                      type="int",
+                      default=27017,
+                      help="Port of MongoDB instance [Default: %default]")
+    op_group.add_option("--recreate_db",
+                      action="store_true",
+                      default=False,
+                      help="Drop and re-create DB if it exists")
+    op_group.add_option("--db_svr_name",
+                      action="store_true",
+                      default=False,
+                      help="When enabled, the server will update the clients with the DB name to use.")
+    parser.add_option_group(op_group)
+
+    op_group = optparse.OptionGroup(parser, "Tuning parameters")
+    op_group.add_option("--dirs_per_worker",
+                      type="int",
+                      default=hydra.Utils.DIRS_PER_IDLE_WORKER,
+                      help="How many directories to issue per idle worker [Default: %default]")
+    op_group.add_option("--dirs_per_client",
+                      type="int",
+                      default=hydra.Utils.DIRS_PER_IDLE_CLIENT,
+                      help="How many directories to issue per idle client [Default: %default]")
+    op_group.add_option("--select_poll_interval",
+                      type="float",
+                      default=hydra.Utils.SELECT_POLL_INTERVAL,
+                      help="Polling time in seconds (float) between select calls [Default: %default]")
+    op_group.add_option("--default_stat_array_len",
+                      type="int",
+                      default=DEFAULT_CONFIG['default_stat_array_len'],
+                      help=optparse.SUPPRESS_HELP)
+    op_group.add_option("--stat_poll_interval",
+                      type="float",
+                      default=UI_STAT_POLL_INTERVAL,
+                      help="Polling time in seconds (float) between UI statistics calls [Default: %default]")
+    parser.add_option_group(op_group)
+
+    op_group = optparse.OptionGroup(parser, "Logging and debug")
+    op_group.add_option("--log", "-l",
+                      default=None,
+                      help="If specified, we will log to this file instead of the console. This is "
+                           "required for logging on Windows platforms.")
+    op_group.add_option("--audit", "-a",
+                      default=None,
+                      help="If specified, we will log audit events to this file instead of the console.")
+    op_group.add_option("--quiet", "-q",
+                      action="store_true",
+                      default=False,
+                      help="Disable console stats output.")
+    op_group.add_option("--verbose", "-v",
+                      action="store_true",
+                      default=False,
+                      help="Show verbose output.")
+    op_group.add_option("--debug",
+                      action="count",
+                      default=0,
+                      help="Enable debug. Add additional --debug for more detailed debug up to 3 total."
+                          " Use --verbose in conjunction with --debug to turn on sub module debugging.")
+    parser.add_option_group(op_group)
 
 def incr_per_depth(data_array, index, val):
   try:
@@ -324,7 +558,7 @@ def init_stats_histogram(stat_state, hist_args):
 '''
 File audit worker handler
 '''
-class WorkerHandler(HydraWorker.HydraWorker):
+class WorkerHandler(hydra.WorkerClass):
   def __init__(self, args={}):
     self.args = dict(DEFAULT_CONFIG)
     self.args.update(args)
@@ -350,9 +584,6 @@ class WorkerHandler(HydraWorker.HydraWorker):
           self.log.warn('DB type of %s specified without a DB name. Expecting DB name to be updated by client or use --db_name parameter'%db_type)
     else:
       self.log.debug("No DB type specified. Using in memory stats collection.")
-    # You can configure additional loggers by adding new variables and using
-    # the correct logger name
-    #self.audit = logging.getLogger('audit')
     
   def init_db(self):
     if self.args.get('db') and self.args['db'].get('db_type') != None:
@@ -489,10 +720,10 @@ class WorkerHandler(HydraWorker.HydraWorker):
     try:
       dir_lstats = os.lstat(dir)
     except WindowsError as e:
-      if e.winerror == 3 and len(dir) > HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH:
-        self.log.error('Unable to stat dir due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH)
+      if e.winerror == 3 and len(dir) > hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH:
+        self.log.error('Unable to stat dir due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH)
       else:
-        if HydraUtils.is_invalid_windows_filename(dir):
+        if hydra.is_invalid_windows_filename(dir):
           self.log.error('Directory contains invalid characters or invalid names for Windows: %s'%dir)
         else:
           self.log.exception(e)
@@ -517,10 +748,10 @@ class WorkerHandler(HydraWorker.HydraWorker):
     try:
       file_lstats = os.lstat(full_path_file)
     except WindowsError as e:
-      if e.winerror == 3 and len(full_path_file) > HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH:
-        self.log.error('Unable to stat file due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%HydraUtils.MAX_WINDOWS_FILEPATH_LENGTH)
+      if e.winerror == 3 and len(full_path_file) > hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH:
+        self.log.error('Unable to stat file due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH)
       else:
-        if HydraUtils.is_invalid_windows_filename(file):
+        if hydra.is_invalid_windows_filename(file):
           self.log.error('File contains invalid characters or invalid names for Windows: %s'%full_path_file)
         else:
           self.log.exception(e)
@@ -601,13 +832,13 @@ class WorkerHandler(HydraWorker.HydraWorker):
         self.args['db']['db_name'] = new_db_name
         self.init_db()
     elif cmd == CMD_RETURN_STATS_DB:
-      self._set_state(HydraWorker.STATE_PROCESSING)
+      self._set_state(hydra.Worker.STATE_PROCESSING)
       self.consolidate_stats_db()
       self._send_client(EVENT_STATS_DB, {
           'stats': self.stats,
           'stats_advanced': self.stats_advanced,
       })
-      self._set_state(HydraWorker.STATE_IDLE)
+      self._set_state(hydra.Worker.STATE_IDLE)
     else:
       return False
     return True
@@ -650,7 +881,7 @@ class WorkerHandler(HydraWorker.HydraWorker):
 '''
 File audit client processor
 '''
-class ClientProcessor(HydraClient.HydraClient):
+class ClientProcessor(hydra.ClientClass):
   def __init__(self, worker_class, args={}):
     super(ClientProcessor, self).__init__(worker_class, args)
     self.init_db(recreate_db=args.get('db', {}).get(CMD_RECREATE_DB))
@@ -818,7 +1049,7 @@ class ClientProcessor(HydraClient.HydraClient):
               all_stat_db_received = False
       if all_stat_db_received:
         #TODO: Added below
-        self._set_state(HydraClient.STATE_IDLE)
+        self._set_state(hydra.Client.STATE_IDLE)
         self.consolidate_stats()
         self.consolidate_stats_db()
         self.consolidate_other()
@@ -852,7 +1083,7 @@ class ClientProcessor(HydraClient.HydraClient):
         
   def _set_state(self, state):
     super(ClientProcessor, self)._set_state(state)
-    if state == HydraClient.STATE_PROCESSING:
+    if state == hydra.Client.STATE_PROCESSING:
       self.write_cstats = True
 
     
@@ -860,7 +1091,7 @@ class ClientProcessor(HydraClient.HydraClient):
 '''
 File audit server processor
 '''
-class ServerProcessor(HydraServer.HydraServer):
+class ServerProcessor(hydra.ServerClass):
   def __init__(self, args={}):
     super(ServerProcessor, self).__init__(args)
     self.stats_histogram = {}
@@ -893,7 +1124,9 @@ class ServerProcessor(HydraServer.HydraServer):
             # Repeatedly converting the array to a dict and back is inefficient
             # but this will happen only once per client and the number of prefix
             # paths should be small so overall impact should be very low
-            self.other['prefix_paths'].extend(client_other.get('prefix_paths', []))
+            pp = client_other.get('prefix_paths', [])
+            if pp:
+              self.other['prefix_paths'].extend(pp)
             self.other['prefix_paths'] = sorted(list(dict.fromkeys(self.other['prefix_paths'])))
   
   def consolidate_stats(self, forced=False):
@@ -1012,7 +1245,7 @@ class ServerProcessor(HydraServer.HydraServer):
       'work_paths': self.work_paths,                      # From base class
     }
     self.send_client_command(
-        client, HydraClient.EVENT_UPDATE_SETTINGS, {'settings': settings}
+        client, hydra.Client.EVENT_UPDATE_SETTINGS, {'settings': settings}
     )
     if self.args['db']['db_svr_name']:
       self.send_client_command(
@@ -1068,220 +1301,46 @@ class ServerProcessor(HydraServer.HydraServer):
       self.consolidate_other()
       self.export_stats()
       # After exporting stats, the server can terminate
-      #self._set_state(HydraServer.STATE_IDLE)
+      #self._set_state(hydra.Server.STATE_IDLE)
       # TODO: Should we shutdown or just wait?
-      self.event_queue.append({'c': HydraServer.EVENT_SHUTDOWN, 'd': None})
-      return HydraServer.STATE_IDLE
+      self.event_queue.append({'c': hydra.Server.EVENT_SHUTDOWN, 'd': None})
+      return hydra.Server.STATE_IDLE
     return next_state
-
-
-'''
-Add command line options
-'''
-def AddParserOptions(parser, raw_cli):
-    parser.add_option("--server", "-s",
-                      action="store_true",
-                      default=False,
-                      help="Act as the Hydra server.")
-    parser.add_option("--connect", "-c",
-                      default=None,
-                      help="FQDN or IP address of the Hydra server.")
-    parser.add_option("--client",
-                      default=None,
-                      action="append",
-                      help="Specify the clients the server will connect to and "
-                           "control. Use multiple --client options to specify "
-                           "multiple clients. (Only used for stat_consolidate "
-                           "currently)")
-    parser.add_option("--port",
-                      default=HydraUtils.DEFAULT_LISTEN_PORT,
-                      help="Port to listen when running as a server and port to connect to as a client.")
-    parser.add_option("--listen",
-                      default=None,
-                      help="IP address to bind to when run as a server. The default will listen to all interfaces.")
-    parser.add_option("--verbose",
-                      action="store_true",
-                      default=False,
-                      help="Provide verbose output.")
-
-    op_group = optparse.OptionGroup(parser, "Processing",
-                           "Options for processing.")
-    op_group.add_option("--path", "-p",
-                      default=None,
-                      action="store",
-                      help="Path to scan. Use of full paths is recommended as "
-                           "clients will interpret this path according to their"
-                           " own current working directory.")
-    op_group.add_option("--path_prefix_file",
-                      default=None,
-                      action="store",
-                      help="Path to a file holding prefixes to prepend to "
-                           "the path specified by the --path parameters. This "
-                           "can be used to allow this client to process the "
-                           "directory walk across parallel mounts/shares to "
-                           "improve directory walk performance.")
-    op_group.add_option("--stat_consolidate",
-                      type="int",
-                      default=0,
-                      help="Instead of scanning a directory path, process data from existing database information."
-                           " Using this option will prevent an actual tree walk. If a path is specified as well the"
-                           " path will be used to adjust for the path depth calculation only. This argument takes"
-                           " the number of clients/databases to process. This number should be the same as the"
-                           " number of clients used to walk the file system initially.")
-    op_group.add_option("--excel_output",
-                      default=None,
-                      help="Specify a file name here to output stats results to an Excel formatted file")
-    parser.add_option_group(op_group)
-
-    op_group = optparse.OptionGroup(parser, "DB options")
-    db_type_choices = ["mongodb"]
-    op_group.add_option("--db_type",
-                      type="choice",
-                      default=None,
-                      choices=db_type_choices,
-                      help="DB type if any to use for storing stats [Choices: %s]"%(','.join(db_type_choices)))
-    op_group.add_option("--db_name",
-                      default=None,
-                      help="Name of the MongoDB database to perform operations")
-    op_group.add_option("--db_host",
-                      default='127.0.0.1',
-                      help="Host of MongoDB instance [Default: %default]")
-    op_group.add_option("--db_port",
-                      type="int",
-                      default=27017,
-                      help="Port of MongoDB instance [Default: %default]")
-    op_group.add_option("--recreate_db",
-                      action="store_true",
-                      default=False,
-                      help="Drop and re-create DB if it exists")
-    op_group.add_option("--db_svr_name",
-                      action="store_true",
-                      default=False,
-                      help="When enabled, the server will update the clients with the DB name to use.")
-    parser.add_option_group(op_group)
-
-    op_group = optparse.OptionGroup(parser, "Tuning parameters")
-    op_group.add_option("--num_workers", "-n",
-                      type="int",
-                      default=0,
-                      help="For clients, specifies the number of worker processes to launch. A value of 0 will have"
-                           " the system set this to the number of CPU cores available. [Default: %default]")
-    op_group.add_option("--dirs_per_worker",
-                      type="int",
-                      default=HydraUtils.DIRS_PER_IDLE_WORKER,
-                      help="How many directories to issue per idle worker [Default: %default]")
-    op_group.add_option("--dirs_per_client",
-                      type="int",
-                      default=HydraUtils.DIRS_PER_IDLE_CLIENT,
-                      help="How many directories to issue per idle client [Default: %default]")
-    op_group.add_option("--select_poll_interval",
-                      type="float",
-                      default=HydraUtils.SELECT_POLL_INTERVAL,
-                      help="Polling time in seconds (float) between select calls [Default: %default]")
-    op_group.add_option("--default_stat_array_len",
-                      type="int",
-                      default=DEFAULT_CONFIG['default_stat_array_len'],
-                      help=optparse.SUPPRESS_HELP)
-    op_group.add_option("--stat_poll_interval",
-                      type="float",
-                      default=UI_STAT_POLL_INTERVAL,
-                      help="Polling time in seconds (float) between UI statistics calls [Default: %default]")
-    parser.add_option_group(op_group)
-
-    op_group = optparse.OptionGroup(parser, "Logging and debug",
-                           "File names support some variable replacement. {pid} will be replaced "
-                           "with the PID of the process. {host} will be replaced by the host name of "
-                           "the machine running the script. All variable substitutions for strftime "
-                           "are also available for use.")
-    op_group.add_option("--log", "-l",
-                      default=None,
-                      help="If specified, we will log to this file instead of the console. This is "
-                           "required for logging on Windows platforms.")
-    #op_group.add_option("--log_format",
-    #                  default="%(asctime)s - %(name)s - %(process)d - %(levelname)s - %(message)s",
-    #                  help="Format for log output. Follows Python standard logging library. [Default: %default]")
-    #op_group.add_option("--audit", "-a",
-    #                  default=None,
-    #                  help="If specified, we will log audit events to this file instead of the console.")
-    #op_group.add_option("--audit_format",
-    #                  default="%(message)s",
-    #                  help="Format for audit output. Follows Python standard logging library. [Default: %default]")
-    op_group.add_option("--debug",
-                      action="count",
-                      default=0,
-                      help="Add flag to enable debug. Add additional flags for more detailed debug.")
-    parser.add_option_group(op_group)
 
 
 def main():
   cli_options = sys.argv[1:]
     
-  # Create our command line parser. We use the older optparse library for compatibility on OneFS
+  # Create our command line parser. We use the older optparse library for compatibility with Python 2.7
   parser = optparse.OptionParser(
       usage=__usage__,
       description=__description__,
       version=__version__,
-      formatter=HydraUtils.IndentedHelpFormatterWithNL(),
+      formatter=hydra.IndentedHelpFormatterWithNL(),
   )
   # Create main CLI parser
   AddParserOptions(parser, cli_options)
-  try:
-    (options, args) = parser.parse_args(cli_options)
-  except:
+  (options, args) = parser.parse_args(cli_options)
+  if options.server is False and options.connect is None:
     parser.print_help()
     sys.exit(1)
   if options.server is False and options.connect is None:
     parser.print_help()
-    print("You must specify running as a server or client")
+    print("===========\nYou must specify running as a server or client")
     sys.exit(1)
   if options.db_type == 'mongodb' and not pymongo:
     parser.print_help()
-    print("pymongo library not installed. Try installing with: pip install pymongo")
+    print("===========\npymongo library not installed. Try installing with: pip install pymongo")
     sys.exit(1)
 
-  # Setup logging and use the --debug CLI option to set the logging level
-  logger_config = dict(HydraUtils.LOGGING_CONFIG)
-  if options.debug > 3:
-    log_level = 5
-    logger_config['handlers']['default']['formatter'] = 'debug'
-  elif options.debug > 2:
-    log_level = 9
-    logger_config['handlers']['default']['formatter'] = 'debug'
-  elif options.debug > 1:
-    log_level = logging.DEBUG
-    logger_config['handlers']['default']['formatter'] = 'debug'
-  elif options.debug > 0 or options.verbose:
-    log_level = logging.INFO
-  else:
-    log_level = logging.INFO
-    logger_config['handlers']['default']['formatter'] = 'message'
-    logger_config['handlers']['file']['formatter'] = 'message'
-  HydraUtils.config_logger(logger_config, '', log_level=log_level, file=options.log)
-  # Setup auditing logger. Use this to output results to a separate file than
-  # the normal logger
-  #if options.audit:
-  #  logger_config['loggers']['audit']['handlers'] = ['audit']
-  #  logger_config['handlers']['audit']['filename'] = options.audit
-  logging.config.dictConfig(logger_config)
-  log = logging.getLogger('')
-  #audit = logging.getLogger('audit')
-  if isinstance(log.handlers[0], logging.handlers.RotatingFileHandler):
-    try:
-      log.handlers[0].doRollover()
-    except:
-      pass
-  #if options.audit:
-  #  try:
-  #    audit.handlers[0].doRollover()
-  #  except:
-  #    pass
+  log = ConfigureLogging(options)
     
   if options.server:
     log.info("Starting up the server")
     # Get paths to process from parsed CLI options
-    proc_paths = HydraUtils.get_processing_paths(options.path)
+    proc_paths = hydra.get_processing_paths(options.path)
     # Get path prefix values
-    prefix_paths = HydraUtils.get_processing_paths([], options.path_prefix_file)
+    prefix_paths = hydra.get_processing_paths([], options.path_prefix_file)
     if len(proc_paths) < 1 and options.stat_consolidate < 1:
       log.critical('A path via command line or stat_consolidate must be specified.')
       sys.exit(1)
@@ -1293,7 +1352,6 @@ def main():
     path_depth_adj = 0
     start_time = 0
     end_time = 0
-    client_addrs = options.client
     startup = True
     # Calculate an offset for the path depth. We want a depth of 0 to represent
     # the starting point of the directory scan. This naturally only occurs when
@@ -1311,12 +1369,11 @@ def main():
     svr_args = dict(DEFAULT_CONFIG)
     svr_args.update(DEFAULT_STATS_CONFIG)
     svr_args.update({
-      'logger_cfg': logger_config,
+      'logger_cfg': LOGGER_CONFIG,
       'dirs_per_idle_client': options.dirs_per_client,
       'select_poll_interval': options.select_poll_interval,
       # EXAMPLE:
       # Application specific variables
-      'clients': client_addrs,
       'reference_time': time.time(),
       'path_depth_adj': path_depth_adj,
       'prefix_paths': prefix_paths,
@@ -1330,7 +1387,7 @@ def main():
       },
       'excel_filename': options.excel_output,
     })
-    svr = HydraServer.HydraServerProcess(
+    svr = hydra.ServerProcess(
         addr=options.listen,
         port=options.port,
         handler=ServerProcessor,
@@ -1351,7 +1408,7 @@ def main():
       # for processing as soon as clients connect. This could be done instead from
       # a UI or even via a TCP message to the server. For the purpose of this
       # example, this is the simplest method.
-      svr.send(HydraServer.EVENT_SUBMIT_WORK, {'paths': proc_paths})
+      svr.send(hydra.Server.EVENT_SUBMIT_WORK, {'paths': proc_paths})
     svr.start()
     
     while True:
@@ -1361,19 +1418,19 @@ def main():
           data = svr.recv()
           
           cmd = data.get('cmd')
-          if cmd == HydraServer.CMD_SVR_STATE:
+          if cmd == hydra.Server.CMD_SVR_STATE:
             state = data['msg'].get('state')
             pstate = data['msg'].get('prev_state')
             log.info("Server state transition: %s -> %s"%(pstate, state))
-            if state == HydraServer.STATE_PROCESSING:
-              if pstate == HydraServer.STATE_IDLE:
+            if state == hydra.Server.STATE_PROCESSING:
+              if pstate == hydra.Server.STATE_IDLE:
                 start_time = time.time()
                 log.info("Time start: %s"%start_time)
-            elif state == HydraServer.STATE_IDLE:
+            elif state == hydra.Server.STATE_IDLE:
               if startup:
                 startup = False
               else:
-                svr.send(HydraServer.EVENT_QUERY_STATS, {'type': 'individual'})
+                svr.send(hydra.Server.EVENT_QUERY_STATS, {'type': 'individual'})
                 end_time = time.time()
                 log.info("Time end: %s"%end_time)
                 log.info("Total time: %s"%(end_time - start_time))
@@ -1383,10 +1440,10 @@ def main():
                 # will continue to run and require some sort of interrupt of
                 # this example program or a message to be sent to the server to
                 # shutdown
-                svr.send(HydraServer.EVENT_SHUTDOWN)
-            elif state == HydraServer.STATE_SHUTDOWN:
+                svr.send(hydra.Server.EVENT_SHUTDOWN)
+            elif state == hydra.Server.STATE_SHUTDOWN:
               break
-          elif cmd == HydraServer.CMD_SVR_STATS:
+          elif cmd == hydra.Server.CMD_SVR_STATS:
             log.info(
               'UI received stats update (%s):\n%s'%(
                 time.strftime("%Y-%m-%d %H:%M:%S", time.localtime()),
@@ -1402,7 +1459,7 @@ def main():
             log.info("UI received: %s"%cmd)
         else:
           log.info("Server wait timeout. Asking for stats update.")
-          svr.send(HydraServer.EVENT_QUERY_STATS)
+          svr.send(hydra.Server.EVENT_QUERY_STATS)
       except KeyboardInterrupt as ke:
         log.info("Terminate signal received, shutting down")
         break
@@ -1411,6 +1468,7 @@ def main():
         break
     log.debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
+    svr.terminate()
   else:
     log.info("Starting up client")
     client_args = dict(DEFAULT_CONFIG)
@@ -1422,7 +1480,7 @@ def main():
         'handler': ClientProcessor,
         'file_handler': WorkerHandler,
         # Options
-        'logger_cfg': logger_config,
+        'logger_cfg': LOGGER_CONFIG,
         'dirs_per_idle_worker': options.dirs_per_worker,
         'select_poll_interval': options.select_poll_interval,
         # EXAMPLE:
@@ -1438,16 +1496,15 @@ def main():
           'recreate_db': options.recreate_db,
         }
     })
-    client = HydraClient.HydraClientProcess(client_args)
+    client = hydra.ClientProcess(client_args)
     client.set_workers(options.num_workers)
     client.start()
     log.info("Waiting until client exits")
-    try:
-      client.join()
-    except:
-      pass
+    client.join()
     log.info("Client exiting")
 
 if __name__ == "__main__" or __file__ == None:
-    multiprocessing.freeze_support()
+    multiprocessing.freeze_support()                  # Support scripts built into executable on Windows
+    if hasattr(multiprocessing, 'set_start_method'):  # Python 3.4+
+      multiprocessing.set_start_method('spawn')       # Force all OS to behave the same when spawning new process
     main()

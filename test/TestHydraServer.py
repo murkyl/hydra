@@ -19,7 +19,6 @@ FILE_SIZE = 1024*8
 RANDOM_DATA_BUF_SIZE = 1024*1024*4
 POLL_WAIT_SECONDS = 5
 FILE_DELAY = 0.25
-LOGGER_CONFIG = None
 
 if __package__ is None:
     # test code is run from the ./test directory.  add the parent
@@ -27,10 +26,7 @@ if __package__ is None:
     current_file = inspect.getfile(inspect.currentframe())
     base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
     sys.path.insert(0, base_path)
-import HydraWorker
-import HydraClient
-import HydraServer
-import HydraUtils
+import hydra
 
 """
 This method creates files with random data in them using a single buffer
@@ -61,7 +57,7 @@ def create_files(path, num, size, buffer = None, buf_size = 1024*1024, prefix = 
           bytes_to_write -= remainder
     
 
-class HydraTestClass(HydraWorker.HydraWorker):
+class HydraTestClass(hydra.Worker.HydraWorker):
   def __init__(self, args={}):
     super(HydraTestClass, self).__init__(args)
     # Set a default delay of 0.5 seconds per file processed
@@ -137,19 +133,35 @@ class TestHydraServer(unittest.TestCase):
   def tearDownClass(cls):
     #print("tearDownClass called")
     try:
-      #cls.server.close()
       cls.server = None
     except:
       pass
     cls.rand_buffer = None
     cls = None
+    
+  def setupServer(self):
+    svr = hydra.ServerProcess()
+    return svr
+    
+  def setupClient(self):
+    client = hydra.ClientProcess({
+      'svr': '127.0.0.1',
+      'port': 8101,
+      'file_handler': HydraTestClass,
+      #'logger_cfg': {
+      #  'host': ,
+      #  'port': ,
+      #  'secret': ,
+      #},
+    })
+    return client
 
   #@unittest.skip("")
   def test_1_spawn_server_and_shutdown(self):
-    svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
+    svr = self.setupServer()
     svr.start()
     
-    svr.send(HydraServer.EVENT_SHUTDOWN)
+    svr.send(hydra.Server.EVENT_SHUTDOWN)
     svr.join(5)
     try:
       self.assertFalse(svr.is_alive())
@@ -159,16 +171,16 @@ class TestHydraServer(unittest.TestCase):
 
   #@unittest.skip("")
   def test_2_single_client_connection_and_shutdown(self):
-    svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
+    svr = self.setupServer()
     svr.start()
     clients = []
-    clients.append(HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG}))
+    clients.append(self.setupClient())
     for c in clients:
       c.start()
     
     logging.getLogger().debug("Waiting 2 seconds for clients to connect before shutdown")
     time.sleep(2)
-    svr.send(HydraServer.EVENT_SHUTDOWN)
+    svr.send(hydra.Server.EVENT_SHUTDOWN)
     
     logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
@@ -180,18 +192,18 @@ class TestHydraServer(unittest.TestCase):
   
   #@unittest.skip("")
   def test_3_multiple_client_connection_and_shutdown(self):
-    svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
+    svr = self.setupServer()
     svr.start()
     clients = []
     num_clients = 4
     for i in range(num_clients):
-      clients.append(HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG}))
+      clients.append(self.setupClient())
     for c in clients:
       c.start()
     
     logging.getLogger().debug("Waiting 2 seconds for clients to connect before shutdown")
     time.sleep(2)
-    svr.send(HydraServer.EVENT_SHUTDOWN)
+    svr.send(hydra.Server.EVENT_SHUTDOWN)
     
     logging.getLogger().debug("Waiting for shutdown up to 10 seconds")
     svr.join(10)
@@ -203,10 +215,10 @@ class TestHydraServer(unittest.TestCase):
       
   #@unittest.skip("")
   def test_4_single_client_single_dir(self):
-    svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
+    svr = self.setupServer()
     svr.start()
     clients = []
-    clients.append(HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG}))
+    clients.append(self.setupClient())
     for c in clients:
       c.start()
     inputs = [svr]
@@ -217,21 +229,21 @@ class TestHydraServer(unittest.TestCase):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
         data = svr.recv()
-        if data['cmd'] == HydraServer.CMD_SVR_STATE:
-          if data['msg']['state'] == HydraServer.STATE_IDLE:
+        if data['cmd'] == hydra.Server.CMD_SVR_STATE:
+          if data['msg']['state'] == hydra.Server.STATE_IDLE:
             found = True
             break
     self.assertTrue(found, msg="Server never went idle")
     
     found = False
     logging.getLogger().debug("Submitting work")
-    svr.send(HydraServer.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir0')]})
+    svr.send(hydra.Server.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir0')]})
     for i in range(40):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if readable:
         data = svr.recv()
         if data['cmd'] == 'state':
-          if data['msg']['state'] in [HydraServer.STATE_IDLE]:
+          if data['msg']['state'] in [hydra.Server.STATE_IDLE]:
             found = True
             break
       else:
@@ -239,14 +251,14 @@ class TestHydraServer(unittest.TestCase):
     self.assertTrue(found, msg="Server never returned to idle state after work submission")
 
     logging.getLogger().debug("Server is idle. Requesting shutdown")
-    svr.send(HydraServer.EVENT_SHUTDOWN)
+    svr.send(hydra.Server.EVENT_SHUTDOWN)
     
     logging.getLogger().debug("Waiting for final stats update")
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
         data = svr.recv()
-        if data['cmd'] == HydraServer.CMD_SVR_STATS:
+        if data['cmd'] == hydra.Server.CMD_SVR_STATS:
           self.assertEqual(data['msg']['stats']['processed_files'], 110)
           self.assertEqual(data['msg']['stats']['processed_dirs'], 11)
           break
@@ -260,12 +272,12 @@ class TestHydraServer(unittest.TestCase):
 
   #@unittest.skip("")
   def test_5_multiple_client_2_worker_multiple_dir(self):
-    svr = HydraServer.HydraServerProcess(args={'logger_cfg': LOGGER_CONFIG})
+    svr = self.setupServer()
     svr.start()
     clients = []
     num_clients = 3
     for i in range(num_clients):
-      clients.append(HydraClient.HydraClientProcess({'svr': '127.0.0.1', 'port': 8101, 'file_handler': HydraTestClass, 'logger_cfg': LOGGER_CONFIG}))
+      clients.append(self.setupClient())
     for c in clients:
       c.set_workers(2)
       c.start()
@@ -276,14 +288,14 @@ class TestHydraServer(unittest.TestCase):
     
     logging.getLogger().debug("Submitting work")
     for i in range(num_test_dirs):
-      svr.send(HydraServer.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
+      svr.send(hydra.Server.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
     found = False
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
         data = svr.recv()
         if data['cmd'] == 'state':
-          if data['msg']['state'] == HydraServer.STATE_PROCESSING:
+          if data['msg']['state'] == hydra.Server.STATE_PROCESSING:
             found = True
             break
     self.assertTrue(found, msg="Server never sent state change to processing state")
@@ -294,19 +306,19 @@ class TestHydraServer(unittest.TestCase):
       if len(readable) > 0:
         data = svr.recv()
         if data['cmd'] == 'state':
-          if data['msg']['state'] == HydraServer.STATE_IDLE:
+          if data['msg']['state'] == hydra.Server.STATE_IDLE:
             found = True
             break
     self.assertTrue(found, msg="Server never returned to idle state")
     logging.getLogger().debug("Server is idle. Shutting down.")
-    svr.send(HydraServer.EVENT_SHUTDOWN)
+    svr.send(hydra.Server.EVENT_SHUTDOWN)
     
     logging.getLogger().debug("Waiting for final stats update")
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
         data = svr.recv()
-        if data['cmd'] == HydraServer.CMD_SVR_STATS:
+        if data['cmd'] == hydra.Server.CMD_SVR_STATS:
           self.assertEqual(data['msg']['stats']['processed_files'], (num_test_dirs)*files_per_test_dir)
           self.assertEqual(data['msg']['stats']['processed_dirs'], (num_test_dirs)*dirs_per_test_dir)
           break
@@ -320,19 +332,17 @@ class TestHydraServer(unittest.TestCase):
 
   #@unittest.skip("")
   def test_6_multiple_client_8_worker_large_dir(self):
-    svr = HydraServer.HydraServerProcess(args={
-        'logger_cfg': LOGGER_CONFIG,
+    svr = hydra.ServerProcess(args={
         'dirs_per_idle_client': 1,
     })
     svr.start()
     clients = []
     num_clients = 3
     for i in range(num_clients):
-      clients.append(HydraClient.HydraClientProcess({
+      clients.append(hydra.ClientProcess({
           'svr': '127.0.0.1',
           'port': 8101,
           'file_handler': HydraTestClass,
-          'logger_cfg': LOGGER_CONFIG,
       }))
       #time.sleep(0.25)
     for c in clients:
@@ -345,14 +355,14 @@ class TestHydraServer(unittest.TestCase):
     
     logging.getLogger().debug("Submitting work")
     for i in range(num_test_dirs):
-      svr.send(HydraServer.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
+      svr.send(hydra.Server.EVENT_SUBMIT_WORK, {'paths': [os.path.join(self.test_path, 'dir%d'%i)]})
     found = False
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
         data = svr.recv()
-        if data['cmd'] == HydraServer.CMD_SVR_STATE:
-          if data['msg']['state'] == HydraServer.STATE_PROCESSING:
+        if data['cmd'] == hydra.Server.CMD_SVR_STATE:
+          if data['msg']['state'] == hydra.Server.STATE_PROCESSING:
             found = True
             break
     self.assertTrue(found, msg="Server never sent state change to processing state")
@@ -362,23 +372,23 @@ class TestHydraServer(unittest.TestCase):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
         data = svr.recv()
-        if data['cmd'] == HydraServer.CMD_SVR_STATE:
-          if data['msg']['state'] == HydraServer.STATE_IDLE:
+        if data['cmd'] == hydra.Server.CMD_SVR_STATE:
+          if data['msg']['state'] == hydra.Server.STATE_IDLE:
             found = True
             break
     self.assertTrue(found, msg="Server never sent state change to idle state")
             
     logging.getLogger().debug("Server is idle. Get individual client stats then shutdown")
-    svr.send(HydraServer.EVENT_QUERY_STATS, {'data': 'individual'})
+    svr.send(hydra.Server.EVENT_QUERY_STATS, {'data': 'individual'})
     logging.getLogger().debug("Shutting down")
-    svr.send(HydraServer.EVENT_SHUTDOWN)
+    svr.send(hydra.Server.EVENT_SHUTDOWN)
     for i in range(20):
       readable, _, _ = select.select(inputs, [], [], POLL_WAIT_SECONDS)
       if len(readable) > 0:
         data = svr.recv()
-        if data['cmd'] == HydraServer.CMD_SVR_STATS_INDIVIDUAL:
+        if data['cmd'] == hydra.Server.CMD_SVR_STATS_INDIVIDUAL:
           logging.getLogger().debug("Individual client stat: %s"%data['msg']['stats'])
-        elif data['cmd'] == HydraServer.CMD_SVR_STATS:
+        elif data['cmd'] == hydra.Server.CMD_SVR_STATS:
             logging.getLogger().debug("Final server stats: %s"%data['msg']['stats'])
             self.assertEqual(data['msg']['stats']['processed_files'], (num_test_dirs)*files_per_test_dir)
             self.assertEqual(data['msg']['stats']['processed_dirs'], (num_test_dirs)*dirs_per_test_dir)
@@ -401,10 +411,11 @@ if __name__ == '__main__':
     log_lvl = 9
   elif debug_count > 0:
     log_lvl = logging.DEBUG
-  LOGGER_CONFIG = dict(HydraUtils.LOGGING_CONFIG)
-  HydraUtils.config_logger(LOGGER_CONFIG, '', log_level=log_lvl)
-  logging.config.dictConfig(LOGGER_CONFIG)
-  root = logging.getLogger('')
+  logging.basicConfig(
+    format='%(asctime)s [%(levelname)8s] %(name)s [%(funcName)s (%(lineno)d)] - %(process)d : %(message)s',
+    level=log_lvl,
+  )
+  root = logging.getLogger()
   worker = logging.getLogger('HydraWorker')
   worker.level= logging.WARN
   client = logging.getLogger('HydraClient')

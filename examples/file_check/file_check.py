@@ -1,10 +1,10 @@
 # -*- coding: utf8 -*-
-__title__ = "file_purge"
+__title__ = "file_check"
 __version__ = "1.0.0"
 __all__ = []
 __author__ = "Andrew Chung <acchung@gmail.com>"
 __license__ = "MIT"
-__copyright__ = """Copyright 2019-2020 Andrew Chung
+__copyright__ = """Copyright 2019,2020 Andrew Chung
 Permission is hereby granted, free of charge, to any person obtaining a copy of 
 this software and associated documentation files (the "Software"), to deal in 
 the Software without restriction, including without limitation the rights to 
@@ -26,58 +26,18 @@ __description__="""Requirements:
   python 2.7+
 
 Description:
-  Server example usage:
-  python {p} -s -p /some/path --date 30 --mtime --purge
 
-  Search all files under /some/path directory and check if the file mtime (file
-  last modified time) is older than 30 days in the past. If it is then delete
-  the file.
-  If the current date is July 20, 1969 (1969-07-20) at 08:00:05, then a setting
-  of --date 30 means that any file before 1969-06-20 at 08:00:05 would be
-  deleted.
-  -----
-  python {p} -s -p /some/path --date 30 --mtime
-
-  In this instance, without the --purge option, files will not be deleted.
-  This mode is like a simulation of what files would be deleted.
-  -----
-  python {p} -s -p /a/path -p /b/path --date 365 --mtime --log server.log
-
-  This instance will process 2 directories, /some/path and /some/other_path as
-  well as deleting files that have mtimes older than 1 year ago.
-  All program output will be redirected to a file called server.log. This will
-  will be automatically rotated if it exists with up to 10 copies retained. It
-  is therefore safe to re-use the same log file name.
-
-  Once a server instance is running. You need to connect one or more clients
-  to start file processing. The clients can be located on the same machines as
-  the server or it can be located on other machines. There is an assumption
-  that the paths that are passed to the server instance will be reachable by
-  all the clients via the same path.
-
-  ====================
-  Client example usage:
-  python {p} -c 127.0.0.1
-
-  This is the simplest invocation of the client. The client will connect to a
-  server running on the local machine.
-  -----
-  python {p} -c 192.168.42.42
-
-  This invocation will connect to a server running at IP 192.168.42.42
-  -----
-  python {p} -c 192.168.42.42 --audit audit.log
-
-  Connect to a server running on 192.168.42.42 and write any audit events to
-  the file named audit.log. This file will be created on the machine that is
-  running the client and in the current working directory.""".format(p=__title__)
-
+  This script will check one or more paths for various file name and file
+  issues given a specific set of restrictions. For example the script can
+  check to see if all file names conform to the UTF-8 standard or check if a
+  file size is too large for a destination file system."""
 
 import inspect
 import os
 import sys
 import multiprocessing
 import time
+import datetime
 import logging
 import socket
 import select
@@ -98,31 +58,41 @@ except:
 # EXAMPLE:
 # Add any additional imports
 import json
-import datetime
 
+try:
+  bytes('A', encoding='utf-8')
+  TO_BYTES = lambda x: bytes(x, encoding='utf-8')
+except:
+  TO_BYTES = lambda x: bytes(x)
 # EXAMPLE:
 # You can add arguments that worker processes should have by default here
 DEFAULT_CONFIG = {
-  'compare_atime': False,
-  'compare_ctime': False,
-  'compare_mtime': False,
-  'time_delta_sec': 0,
-  'current_time': 0,
-  'purge': False,
-  'block_size': 8192,
+  'check_encoding': False,          # Check file and path encoding
+  'check_name_case_dupe': False,    # Check if a file/path in the same directory differs by only case
+  'check_invalid_chars': False,     # Check for invalid characters in file name and path
+  'check_file_name_length': False,  # Check file name exceeds a certain length
+  'check_path_name_length': False,  # Check path name exceeds a certain length
+  'check_file_size': False,         # Check if a file exceeds a certain size
+  
+  'encoding': 'utf-8',              # Which encoding to check if we are checking encoding
+  'file_name_case_dupe': False,     # In a single directory, alert if 2 or more files differ by just case
+  'name_invalid_chars': '',         # Set of invalid characters
+  'file_name_length': 255,          # Maximum length of a file name
+  'path_name_length': 0,            # Maximum length of the path portion
+  'file_size': 4398046511104,       # 4 TiB file size limit
 }
 
 # EXAMPLE:
 # Additional simple counting stats. Adding stats here requires the code below to
 # increment the counters somewhere.
 EXTRA_BASIC_STATS = [
-  'file_size_logical_scanned',
-  'file_size_logical_512byte_block_scanned',
-  'file_size_logical_8kbyte_block_scanned',
-  'deleted_files',
-  'deleted_files_size_logical_total',
-  'deleted_files_size_512byte_block_total',
-  'deleted_files_size_8kbyte_block_total',
+  'err_file_name_encoding',
+  'err_path_name_encoding',
+  'err_file_name_case_dupe',
+  'err_name_invalid_chars',
+  'err_file_name_length',
+  'err_path_name_length',
+  'err_file_size',
 ]
 
 LOGGER_CONFIG = {
@@ -271,26 +241,11 @@ def AddParserOptions(parser, raw_cli):
                            "improve directory walk performance.")
 
     # EXAMPLE: Add or alter options specific for your application here
-    op_group = optparse.OptionGroup(parser, "Delete file criteria specified for servers")
-    op_group.add_option("--date", "-d",
-                      help="String the describes at what point in time should a file be considered eligible for deletion."
-                          "Currently it only supports the number of days in the past to compare. e.g. 20 or 30 or 365.")
-    op_group.add_option("--purge",
+    op_group = optparse.OptionGroup(parser, "File and path check criteria")
+    op_group.add_option("--check_encoding",
                       action="store_true",
-                      default=False,
-                      help="Flag to purge files that match date and timestamp criteria.")
-    op_group.add_option("--atime",
-                      action="store_true",
-                      default=False,
-                      help="Compare atime (last access time) of file to determine if a file should be deleted.")
-    op_group.add_option("--ctime",
-                      action="store_true",
-                      default=False,
-                      help="Compare ctime (last file metadata change time) of file to determine if a file should be deleted. The ctime value normally changes when file metadata or file contents change.")
-    op_group.add_option("--mtime",
-                      action="store_true",
-                      default=False,
-                      help="Compare mtime (last file modified time) of file to determine if a file should be deleted. The mtime value changes when the contents of the file change.")
+                      default=DEFAULT_CONFIG['check_encoding'],
+                      help="Check character encoding of directories and files is UTF-8")
     parser.add_option_group(op_group)
 
     op_group = optparse.OptionGroup(parser, "Tuning parameters")
@@ -311,11 +266,10 @@ def AddParserOptions(parser, raw_cli):
     op_group = optparse.OptionGroup(parser, "Logging, auditing and debug")
     op_group.add_option("--log", "-l",
                       default=None,
-                      help="If specified, we will log to this file instead of the console. This is "
-                           "required for logging on Windows platforms.")
+                      help="Log to this file instead of the console.")
     op_group.add_option("--audit", "-a",
                       default=None,
-                      help="If specified, we will log audit events to this file instead of the console.")
+                      help="Log audit events to this file instead of the console.")
     op_group.add_option("--quiet", "-q",
                       action="store_true",
                       default=False,
@@ -331,14 +285,6 @@ def AddParserOptions(parser, raw_cli):
                           " Use --verbose in conjunction with --debug to turn on sub module debugging.")
     parser.add_option_group(op_group)
 
-def parse_date_input(date_str):
-  try:
-    num_days = int(date_str)
-  except:
-    print("Could not parse the --date option. Please only provide a number in days.")
-    sys.exit(1)
-  return datetime.timedelta(days=num_days).total_seconds()
-
 
 class WorkerHandler(hydra.WorkerClass):
   def __init__(self, args={}):
@@ -353,7 +299,7 @@ class WorkerHandler(hydra.WorkerClass):
   def init_process(self):
     # EXAMPLE:
     # Add any initialization that is required after worker starts
-
+    
     # Set the audit log level to INFO, otherwise only WARNING and above get logged
     self.audit.setLevel(logging.INFO)
     
@@ -369,60 +315,71 @@ class WorkerHandler(hydra.WorkerClass):
     return dirs, files
     
   def handle_directory_pre(self, dir):
+    if self.args['check_encoding']:
+      if u"\uFFFD" in dir:
+        self.stats['err_path_name_encoding'] += 1
+        self.audit.info("Invalid UTF-8 encoding for directory: %s"%dir.encode('unicode-escape'))
     return False
     
   def handle_file(self, dir, file):
     """
-    Delete files older than a certain time determined by the
-    self.args['time_delta_sec'] argument
+    For each file verify if the file meets certain criteria like file name encoding, file size, file name length, etc.
     """
     # EXAMPLE:
     # Add your application code to handle each file
-    delete_file = False
-    time_delta = self.args['time_delta_sec']
-    current_time = self.args['current_time']
-    full_path_file = os.path.join(dir, file)
+    stat_required = False
+    self.log.debug("Directory: %s, File: %s, Binary File Name: %s"%
+        (dir.encode('unicode-escape'), file.encode('unicode-escape'), TO_BYTES(file))
+    )
     try:
-      file_lstats = os.lstat(full_path_file)
-    except WindowsError as e:
-      if e.winerror == 3 and len(full_path_file) > 255:
-        self.log.error('Unable to stat file due to path length > 255 characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1')
+      full_path_file = os.path.join(dir, file)
+      full_path_escaped = full_path_file.encode('unicode-escape')
+    except Exception as e:
+      return False
+    if self.args['check_encoding']:
+      if u"\uFFFD" in file:
+        self.stats['err_file_name_encoding'] += 1
+        self.audit.info("Invalid UTF-8 encoding for file: %s"%full_path_escaped)
+    if self.args['check_name_case_dupe']:
+      pass
+    if self.args['check_invalid_chars']:
+      pass
+    if self.args['check_file_name_length']:
+      if len(file) > self.args['file_name_length']:
+        self.stats['err_file_name_length'] += 1
+        self.audit.info("Exceeded file name length: %s"%full_path_escaped)
+    if self.args['check_path_name_length']:
+      if len(dir) > self.args['path_name_length']:
+        self.stats['err_path_name_length'] += 1
+        self.audit.info("Exceeded path name length: %s"%(dir.encode('unicode-escape')))
+
+    for i in ['check_file_size']:
+      if self.args.get(i):
+        stat_required = True
+        break
+    if stat_required:
+      try:
+        file_lstats = os.lstat(full_path_file)
+      except WindowsError as e:
+        if e.winerror == 3 and len(full_path_file) > 255:
+          self.log.warn('Unable to stat file due to path length > 255 characters.'
+              ' Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1')
+          self.audit.info('Path length > 255 characters: %s'%full_path_file.encode('unicode-escape'))
+          return False
+        elif e.winerror == 2:
+          self.audit.info("File not found: %s"%full_path_escaped)
+          return False
+        else:
+          self.audit.info("Unable to stat file: %s"%full_path_escaped)
+          return False
+      except Exception as e:
+        self.audit.info("Unable to stat file: %s"%full_path_escaped)
         return False
-    file_lstats = os.lstat(os.path.join(dir, file))
-    
-    '''Compare the access time to find a file that is older than X'''
-    if self.args['compare_atime']:
-      if (file_lstats.st_atime + time_delta) < current_time:
-        delete_file = True
-    '''Compare the creation time to find a file that is older than X'''
-    if self.args['compare_ctime']:
-      if (file_lstats.st_ctime + time_delta) < current_time:
-        delete_file = True
-    '''Compare the modified time to find a file that is older than X'''
-    if self.args['compare_mtime']:
-      if (file_lstats.st_mtime + time_delta) < current_time:
-        delete_file = True
-    
-    fsize = file_lstats.st_size
-    bs = self.args['block_size']
-    block_fsize = (fsize//bs + (not not fsize%bs))*bs
-    block_512_fsize = (fsize//512 + (not not fsize%512))*512
-    self.stats['file_size_logical_scanned'] += fsize
-    self.stats['file_size_logical_512byte_block_scanned'] += block_512_fsize
-    self.stats['file_size_logical_8kbyte_block_scanned'] += block_fsize
-    if delete_file:
-      if self.args.get('purge'):
-        try:
-          os.unlink(full_path_file)
-          self.audit.info(full_path_file)
-        except:
-          self.log.warn('Error delete file: %s'%full_path_file)
-      else:
-        self.audit.info('Simulate delete: %s'%full_path_file)
-      self.stats['deleted_files'] += 1
-      self.stats['deleted_files_size_logical_total'] += fsize
-      self.stats['deleted_files_size_512byte_block_total'] += block_512_fsize
-      self.stats['deleted_files_size_8kbyte_block_total'] += block_fsize
+      if self.args['check_file_size']:
+        if file_lstats.st_size > self.args['file_size']:
+          self.stats['err_file_size'] += 1
+          self.audit.info("Exceeded file size: %s"%full_path_escaped)
+    self.log.info('Processed file: %s'%full_path_escaped)
     return True
     
   def handle_update_settings(self, cmd):
@@ -450,14 +407,11 @@ class ClientProcessor(hydra.ClientClass):
           self.stats[s] += set[w]['stats'][s]
   
   def handle_update_settings(self, cmd):
+    super(ClientProcessor, self).handle_update_settings(cmd)
     self.args.update(cmd['settings'])
-    self.send_all_workers({
-        'op': 'update_settings',
-        'settings': cmd['settings'],
-    })
     return True
     
-class ServerProcessor(HydraServer):
+class ServerProcessor(hydra.ServerClass):
   def init_stats(self, stat_state):
     super(ServerProcessor, self).init_stats(stat_state)
     for s in EXTRA_BASIC_STATS:
@@ -474,29 +428,19 @@ class ServerProcessor(HydraServer):
     return self.stats
           
   def handle_client_connected(self, client):
-    setting_keys = list(DEFAULT_CONFIG.keys())
-    settings = {}
-    for key in setting_keys:
-      settings[key] = self.args.get(key)
     self.send_client_command(
         client,
+        hydra.Client.EVENT_UPDATE_SETTINGS,
         {
-          'cmd': 'update_settings',
-          'settings': settings,
+          'settings': self.args,
         }
     )
-    return True
 
-  def handle_extended_server_cmd(self, cmd):
-    if cmd.get('cmd') == 'output_final_stats':
-      self.log.info("\n%s"%json.dumps(self.stats, indent=2, sort_keys=True))
-    return True
-   
 
 def main():
   cli_options = sys.argv[1:]
     
-  # Create our command line parser. We use the older optparse library for compatibility on OneFS
+  # Create our command line parser. We use the older optparse library for compatibility with Python 2.7
   parser = optparse.OptionParser(
       usage=__usage__,
       description=__description__,
@@ -505,22 +449,15 @@ def main():
   )
   # Create main CLI parser
   AddParserOptions(parser, cli_options)
-  try:
-    (options, args) = parser.parse_args(cli_options)
-  except:
-    parser.print_help()
-    sys.exit(1)
+  (options, args) = parser.parse_args(cli_options)
   if options.server is False and options.connect is None:
     parser.print_help()
     print("===========\nYou must specify running as a server or client")
     sys.exit(1)
   # EXAMPLE: Add option validation code
-  if not options.date and options.server:
-    parser.print_help()
-    print("===========\nYou must specify the --date argument")
-    sys.exit(1)
 
   log = ConfigureLogging(options)
+  stats = logging.getLogger('stats')
   
   if options.server:
     log.info("Starting up the server")
@@ -530,26 +467,19 @@ def main():
       log.critical('A path via command line or a path file must be specified.')
       sys.exit(1)
     # EXAMPLE:
-    # There is an assumption that all clients have their clocks synchronized.
-    current_time = time.time()
     svr_args = {
-        'logger_cfg': logger_config,
+        'logger_cfg': LOGGER_CONFIG,
         'dirs_per_idle_client': options.dirs_per_client,
         'select_poll_interval': options.select_poll_interval,
         # EXAMPLE:
         # Application specific variables
-        'current_time': current_time,
-        'time_delta_sec': time_delta_sec,
-        'compare_atime': options.atime,
-        'compare_ctime': options.ctime,
-        'compare_mtime': options.mtime,
-        'block_size': DEFAULT_CONFIG['block_size'],
-        'purge': options.purge,
     }
-    # Parse date field to get number of seconds in the past to use for comparison
-    time_delta_sec = parse_date_input(options.date)
-    log.debug("Time delta in seconds: %s"%time_delta_sec)
-    log.debug("Current time: %s"%current_time)
+    # EXAMPLE:
+    # Copy values from the options variables into the svr_args dictionary
+    for op in [
+          ('check_encoding', 'check_encoding'),
+      ]:
+      svr_args[op[0]] = getattr(options, op[1])
 
     start_time = 0
     end_time = 0
@@ -557,7 +487,7 @@ def main():
         addr=options.listen,
         port=options.port,
         handler=ServerProcessor,
-        args=server_args,
+        args=svr_args,
     )
     svr.start()
     # EXAMPLE:

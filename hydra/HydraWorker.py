@@ -45,16 +45,16 @@ and workers
 
 """
 
-import os
-import sys
-import platform
-import time
-import copy
-import socket
-import select
-import struct
-import multiprocessing
+import inspect
 import traceback
+import os
+import platform
+from time import time as time_now
+from copy import deepcopy
+import socket
+from select import select
+from struct import unpack
+from multiprocessing import Process
 import logging
 import logging.config
 try:
@@ -63,13 +63,12 @@ except:
    import pickle
 import zlib
 from collections import deque
-import HydraUtils
+from . import HydraUtils
 
 try:
   from os import scandir
   fswalk = os.walk          # If scandir exists os.walk will use it
 except ImportError:
-  import inspect
   # Figure out which version of scandir to use because we need to
   # account for the different binaries used.
   current_file = inspect.getfile(inspect.currentframe())
@@ -104,7 +103,8 @@ except ImportError:
     elif 'FreeBSD-7' in local_os:
       scandir_path = 'scandir_freebsd7'
   if scandir_path:
-    sys.path.insert(0, os.path.join(base_path, 'lib', scandir_path))
+    from sys import path
+    path.insert(0, os.path.join(base_path, 'lib', scandir_path))
     import scandir
   else:
     scandir = os
@@ -218,14 +218,14 @@ HYDRA_WORKER_STATE_TABLE = {
   },
 }
 
-class HydraWorker(multiprocessing.Process):
+class HydraWorker(Process):
   def __init__(self, args={}):
     """
     Fill in docstring
     """
     super(HydraWorker, self).__init__()
-    self.log = logging.getLogger(__name__)
-    self.args = copy.deepcopy(args)
+    self.log = logging.getLogger()
+    self.args = deepcopy(args)
     self.fswalk = fswalk
     self.loopback_addr = args.get('loopback_addr', HydraUtils.LOOPBACK_ADDR)
     self.loopback_port = args.get('loopback_port', HydraUtils.LOOPBACK_PORT)
@@ -368,14 +368,14 @@ class HydraWorker(multiprocessing.Process):
     pipe is closed and there is no data in the pipe
     """
     if timeout >= 0:
-      readable, _, _ = select.select([self.client_conn], [], [], timeout)
+      readable, _, _ = select([self.client_conn], [], [], timeout)
       if not readable:
         return False
     msg_size = self.client_conn.recv(4)
     if len(msg_size) != 4:
       return b''
     try:
-      data_len = struct.unpack('!L', msg_size)[0]
+      data_len = unpack('!L', msg_size)[0]
       data = HydraUtils.socket_recv(self.client_conn, data_len)
     except Exception as e:
       self.log.exception(e)
@@ -416,7 +416,7 @@ class HydraWorker(multiprocessing.Process):
       exceptional = []
       try:
         self.log.log(5, "Waiting on select")
-        readable, _, exceptional = select.select(self.inputs, [], self.inputs, wait_count)
+        readable, _, exceptional = select(self.inputs, [], self.inputs, wait_count)
         self.log.log(5, "Select returned")
       except KeyboardInterrupt:
         self.log.debug("Caught keyboard interrupt waiting for event")
@@ -428,7 +428,7 @@ class HydraWorker(multiprocessing.Process):
           msg_size = s.recv(4)
           if len(msg_size) != 4:
             continue
-          data_len = struct.unpack('!L', msg_size)[0]
+          data_len = unpack('!L', msg_size)[0]
           data = HydraUtils.socket_recv(s, data_len)
           if len(data) > 0:
             self.log.log(9, "Worker got data: %r"%data)
@@ -462,13 +462,12 @@ class HydraWorker(multiprocessing.Process):
           else:
             if len(self.work_queue) <= 0:
               self._process_state_event(CMD_WORK_QUEUE_EMPTY)
-            if wait_count < HydraUtils.LONG_WAIT_THRESHOLD:
-              wait_count += HydraUtils.SHORT_WAIT_TIMEOUT
+            wait_count += HydraUtils.SHORT_WAIT_TIMEOUT*(wait_count < HydraUtils.LONG_WAIT_THRESHOLD)
         except KeyboardInterrupt:
           self._set_state(STATE_SHUTDOWN)
           break
         except Exception as e:
-          self.log.exception(e)
+          self.log.critical("Exception when processing work queue: %s"%traceback.format_exc())
     # Perform cleanup operations before the process terminates
     self._cleanup(forced=forced_shutdown)
     self.log.debug("Ending PID: %d, Process name: %s"%(self.pid, self.name))
@@ -539,8 +538,20 @@ class HydraWorker(multiprocessing.Process):
     return self.stats
     
   def _init_process_logging(self):
+    # Re-init logger in the sub-process as it is not inherited from parent
+    self.log = logging.getLogger()
     if self.args.get('logger_cfg'):
-      logging.config.dictConfig(self.args['logger_cfg'])
+      self.log.setLevel(self.args['logger_cfg'].get('loggers', {}).get('', {}).get('level', logging.WARN))
+      if self.args.get('logger_cfg') and self.args.get('logger_cfg').get('port'):
+        self.log.handlers = [
+          HydraUtils.SecureSocketHandler(
+            host=self.args.get('logger_cfg').get('host', HydraUtils.LOOPBACK_ADDR),
+            port=self.args.get('logger_cfg').get('port'),
+            secret=self.args.get('logger_cfg').get('secret'),
+          )
+        ]
+    else:
+      self.log.handlers = [logging.StreamHandler()]
         
   def _queue_dirs(self, data):
     """
@@ -551,7 +562,6 @@ class HydraWorker(multiprocessing.Process):
       self.log.error("Malformed message for operation 'proc_dir': %r"%data)
       return False
     for dir in dirs:
-      #if dir in [None, '.', '..']:
       if dir in [None]:
         self.log.warn('Invalid directory process request: %s'%dir)
         continue
@@ -640,13 +650,13 @@ class HydraWorker(multiprocessing.Process):
     Fill in docstring
     """
     self.log.log(5, "_process_work_queue invoked")
-    start_time = time.time()
+    start_time = time_now()
     temp_work = []
     try:
       work_item = self.work_queue.popleft()
     except:
       # No work items
-      end_time = time.time()
+      end_time = time_now()
       return False
     work_type = work_item.get('type', None)
     self.log.log(9, "Work type: %s"%work_type)
@@ -683,7 +693,7 @@ class HydraWorker(multiprocessing.Process):
               # we will queue up the files and push them onto the 
               # processing queue and let the main processing loop have a
               # chance to pick up new commands
-              proc_time = time.time()
+              proc_time = time_now()
               if (proc_time - start_time) > HydraUtils.LONG_PROCESSING_THRESHOLD:
                 temp_work.append(file)
                 continue
@@ -696,7 +706,7 @@ class HydraWorker(multiprocessing.Process):
               except Exception as e:
                 self.log.debug('Skipped file: %s'%os.path.join(root, file))
                 self.stats['skipped_files'] += 1
-                self.log.critical(traceback.format_exc())
+                self.log.critical('Exception encountered while handling file: %s'%traceback.format_exc())
             # We actually want to abort the tree walk as we want to handle the directory structure 1 directory at a time
             dirs[:] = []
         except Exception as e:
@@ -718,7 +728,7 @@ class HydraWorker(multiprocessing.Process):
         # If the time exceeds LONG_PROCESSING_THRESHOLD, we will queue up
         # the files and push them onto the processing queue and let the
         # main processing loop have a chance to pick up new commands
-        proc_time = time.time()
+        proc_time = time_now()
         if (proc_time - start_time) > HydraUtils.LONG_PROCESSING_THRESHOLD:
           temp_work.append(file)
           continue
@@ -743,7 +753,7 @@ class HydraWorker(multiprocessing.Process):
     #  self.stats['processed_files'] += 1
     else:
       self.log.error("Unknown work type found in work queue. Queued work item: %r"%work_item)
-    end_time = time.time()
+    end_time = time_now()
     return True
 
   # State machine methods
