@@ -538,7 +538,12 @@ class HydraWorker(Process):
     return self.stats
     
   def _init_process_logging(self):
-    # Re-init logger in the sub-process as it is not inherited from parent
+    # Reset all the handlers for each logger to leave only the root handler
+    # as the workers should communicate to the client over the socket handler
+    logger_nodes = list(logging.root.manager.loggerDict.items())
+    for name, logger in logger_nodes:
+      logger.handlers = []
+    # Setup the socket handler and fall-back to the console
     self.log = logging.getLogger()
     if self.args.get('logger_cfg') and self.args.get('port'):
       self.log.setLevel(self.args['logger_cfg'].get('loggers', {}).get('', {}).get('level', logging.WARN))
@@ -551,6 +556,7 @@ class HydraWorker(Process):
       ]
     else:
       self.log.handlers = [logging.StreamHandler()]
+    
         
   def _queue_dirs(self, data):
     """
