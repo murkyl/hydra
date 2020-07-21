@@ -540,16 +540,15 @@ class HydraWorker(Process):
   def _init_process_logging(self):
     # Re-init logger in the sub-process as it is not inherited from parent
     self.log = logging.getLogger()
-    if self.args.get('logger_cfg'):
+    if self.args.get('logger_cfg') and self.args.get('port'):
       self.log.setLevel(self.args['logger_cfg'].get('loggers', {}).get('', {}).get('level', logging.WARN))
-      if self.args.get('logger_cfg') and self.args.get('logger_cfg').get('port'):
-        self.log.handlers = [
-          HydraUtils.SecureSocketHandler(
-            host=self.args.get('logger_cfg').get('host', HydraUtils.LOOPBACK_ADDR),
-            port=self.args.get('logger_cfg').get('port'),
-            secret=self.args.get('logger_cfg').get('secret'),
-          )
-        ]
+      self.log.handlers = [
+        HydraUtils.SecureSocketHandler(
+          host=self.args.get('host', HydraUtils.LOOPBACK_ADDR),
+          port=self.args.get('port'),
+          secret=self.args.get('secret'),
+        )
+      ]
     else:
       self.log.handlers = [logging.StreamHandler()]
         
