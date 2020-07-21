@@ -317,7 +317,6 @@ class WorkerHandler(hydra.WorkerClass):
       if proc.returncode != 0:
         self.log.error("Non-zero return code on directory: %s"%dir)
         self.log.error("CMD run: %s %s/*"%(' '.join(self.args['exec_cmd']), dir))
-        self.log.error(self.args)
         if self.args.get('log_stderr'):
           self.log.error("Command STDERR: %s"%proc_err)
     return False
