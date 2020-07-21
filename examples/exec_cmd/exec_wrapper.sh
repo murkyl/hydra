@@ -23,16 +23,16 @@
 
 # Modify the options below to match your environment
 PROCESS_PATH="/ifs/some/path"
-BASE_PATH=/ifs/scripts/exec_cmd
-LOG_PATH=/ifs/scripts/exec_cmd_logs
+BASE_PATH="/ifs/scripts/exec_cmd"
+LOG_PATH="/ifs/scripts/exec_cmd_logs"
 CLIENT_OPTIONS="-v"
 SERVER_OPTIONS="-v"
 
 # Standard options below. Should not need to modify these normally
 NUM_WORKERS=4
-SCRIPT="$BASE_PATH/exec_cmd.py"
-CLIENT_LOG=" -l ${LOG_PATH}/client_$(hostname).log"
-SERVER_LOG=" -l ${LOG_PATH}/server.log"
+SCRIPT="${BASE_PATH}/exec_cmd.py"
+CLIENT_LOG="-l ${LOG_PATH}/client_$(hostname).log"
+SERVER_LOG="-l ${LOG_PATH}/server.log"
 SVR_IP=`isi_nodes -L "%{internal}"`
 
 
@@ -46,6 +46,12 @@ function cleanup() {
 
 function check_params() {
   err=0
+  hydra=`python -c "import hydra" &> /dev/null`
+  hydra_missing=$?
+  if [[ ${hydra_missing} != 0 ]]; then
+    echo "Hydra Python module not found. Check installation."
+    err=1
+  fi
   screen_exe=`which screen`
   if [ "${screen_exe}" == "" ]; then
     echo "This script depends on the 'screen' binary being available. Install 'screen' and re-run."
@@ -56,11 +62,11 @@ function check_params() {
     err=1
   fi
   if [ ! -d "${BASE_PATH}" ]; then
-    echo "Base path does not exist. Check script variables."
+    echo "Base path does not exist. Check BASE_PATH variable."
     err=1
   fi
   if [ ! -d "${LOG_PATH}" ]; then
-    echo "Log path does not exist. Check script variables."
+    echo "Log path does not exist. Check LOG_PATH variable."
     err=1
   fi
   if [ "${err}" == 1 ]; then
@@ -69,6 +75,7 @@ function check_params() {
 }
 
 function start_clients() {
+  echo "Starting clients with command: ${BASE_PATH}/$0 client ${SVR_IP}"
   isi_for_array -X \
       screen -d -m -S exec_cmd \
       bash "${BASE_PATH}/$0 client ${SVR_IP}"
@@ -82,11 +89,10 @@ elif [ "$1" == "cleanup" ]; then
   exit 1
 elif [ "$1" == "start" ]; then
   cleanup
-  echo "Starting server"
   shift
+  echo "Starting server with command: python ${SCRIPT} -s -p ${PROCESS_PATH} ${SERVER_LOG} ${SERVER_OPTIONS} $@"
   screen -d -m -S exec_cmd_s \
       python ${SCRIPT} -s -p ${PROCESS_PATH} ${SERVER_LOG} ${SERVER_OPTIONS} -- $@
-  echo "Starting clients"
   start_clients
 else
   cat <<- EOF
