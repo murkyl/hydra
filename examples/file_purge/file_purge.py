@@ -242,14 +242,9 @@ def AddParserOptions(parser, raw_cli):
     op_group.add_option("--connect", "-c",
                       default=None,
                       help="FQDN or IP address of the Hydra server.")
-    op_group.add_option("--num_workers", "-n",
-                      type="int",
-                      default=0,
-                      help="For clients, specifies the number of worker processes to launch. A value of 0 will have"
-                           " the system set this to the number of CPU cores available. [Default: %default]")
     parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Processing",
+    op_group = optparse.OptionGroup(parser, "[Server] Processing options",
                            "Options for processing.")
     op_group.add_option("--path", "-p",
                       default=None,
@@ -271,7 +266,7 @@ def AddParserOptions(parser, raw_cli):
                            "improve directory walk performance.")
 
     # EXAMPLE: Add or alter options specific for your application here
-    op_group = optparse.OptionGroup(parser, "Delete file criteria specified for servers")
+    op_group = optparse.OptionGroup(parser, "[Server] Delete file criteria")
     op_group.add_option("--date", "-d",
                       help="String the describes at what point in time should a file be considered eligible for deletion."
                           "Currently it only supports the number of days in the past to compare. e.g. 20 or 30 or 365.")
@@ -293,7 +288,12 @@ def AddParserOptions(parser, raw_cli):
                       help="Compare mtime (last file modified time) of file to determine if a file should be deleted. The mtime value changes when the contents of the file change.")
     parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Tuning parameters")
+    op_group = optparse.OptionGroup(parser, "[Client] Tuning parameters")
+    op_group.add_option("--num_workers", "-n",
+                      type="int",
+                      default=0,
+                      help="For clients, specifies the number of worker processes to launch. A value of 0 will have"
+                           " the system set this to the number of CPU cores available. [Default: %default]")
     op_group.add_option("--dirs_per_worker",
                       type="int",
                       default=hydra.Utils.DIRS_PER_IDLE_WORKER,
@@ -416,7 +416,7 @@ class WorkerHandler(hydra.WorkerClass):
           os.unlink(full_path_file)
           self.audit.info(full_path_file)
         except:
-          self.log.warn('Error delete file: %s'%full_path_file)
+          self.log.warn('Error deleting file: %s'%full_path_file)
       else:
         self.audit.info('Simulate delete: %s'%full_path_file)
       self.stats['deleted_files'] += 1
@@ -450,14 +450,11 @@ class ClientProcessor(hydra.ClientClass):
           self.stats[s] += set[w]['stats'][s]
   
   def handle_update_settings(self, cmd):
+    super(ClientProcessor, self).handle_update_settings(cmd)
     self.args.update(cmd['settings'])
-    self.send_all_workers({
-        'op': 'update_settings',
-        'settings': cmd['settings'],
-    })
     return True
     
-class ServerProcessor(HydraServer):
+class ServerProcessor(hydra.ServerClass):
   def init_stats(self, stat_state):
     super(ServerProcessor, self).init_stats(stat_state)
     for s in EXTRA_BASIC_STATS:
@@ -474,29 +471,19 @@ class ServerProcessor(HydraServer):
     return self.stats
           
   def handle_client_connected(self, client):
-    setting_keys = list(DEFAULT_CONFIG.keys())
-    settings = {}
-    for key in setting_keys:
-      settings[key] = self.args.get(key)
     self.send_client_command(
         client,
+        hydra.Client.EVENT_UPDATE_SETTINGS,
         {
-          'cmd': 'update_settings',
-          'settings': settings,
+          'settings': self.args,
         }
     )
-    return True
-
-  def handle_extended_server_cmd(self, cmd):
-    if cmd.get('cmd') == 'output_final_stats':
-      self.log.info("\n%s"%json.dumps(self.stats, indent=2, sort_keys=True))
-    return True
    
 
 def main():
   cli_options = sys.argv[1:]
     
-  # Create our command line parser. We use the older optparse library for compatibility on OneFS
+  # Create our command line parser. We use the older optparse library for compatibility with Python 2.7
   parser = optparse.OptionParser(
       usage=__usage__,
       description=__description__,
@@ -505,22 +492,19 @@ def main():
   )
   # Create main CLI parser
   AddParserOptions(parser, cli_options)
-  try:
-    (options, args) = parser.parse_args(cli_options)
-  except:
-    parser.print_help()
-    sys.exit(1)
+  (options, args) = parser.parse_args(cli_options)
   if options.server is False and options.connect is None:
     parser.print_help()
     print("===========\nYou must specify running as a server or client")
     sys.exit(1)
   # EXAMPLE: Add option validation code
-  if not options.date and options.server:
+  if options.server and not options.date:
     parser.print_help()
     print("===========\nYou must specify the --date argument")
     sys.exit(1)
 
   log = ConfigureLogging(options)
+  stats = logging.getLogger('stats')
   
   if options.server:
     log.info("Starting up the server")
@@ -532,8 +516,12 @@ def main():
     # EXAMPLE:
     # There is an assumption that all clients have their clocks synchronized.
     current_time = time.time()
+    # Parse date field to get number of seconds in the past to use for comparison
+    time_delta_sec = parse_date_input(options.date)
+    log.debug("Time delta in seconds: %s"%time_delta_sec)
+    log.debug("Current time: %s"%current_time)
     svr_args = {
-        'logger_cfg': logger_config,
+        'logger_cfg': LOGGER_CONFIG,
         'dirs_per_idle_client': options.dirs_per_client,
         'select_poll_interval': options.select_poll_interval,
         # EXAMPLE:
@@ -546,10 +534,6 @@ def main():
         'block_size': DEFAULT_CONFIG['block_size'],
         'purge': options.purge,
     }
-    # Parse date field to get number of seconds in the past to use for comparison
-    time_delta_sec = parse_date_input(options.date)
-    log.debug("Time delta in seconds: %s"%time_delta_sec)
-    log.debug("Current time: %s"%current_time)
 
     start_time = 0
     end_time = 0
@@ -557,7 +541,7 @@ def main():
         addr=options.listen,
         port=options.port,
         handler=ServerProcessor,
-        args=server_args,
+        args=svr_args,
     )
     svr.start()
     # EXAMPLE:
