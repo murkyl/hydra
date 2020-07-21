@@ -365,7 +365,6 @@ class WorkerHandler(hydra.WorkerClass):
       self.stats[s] = 0
       
   def filter_subdirectories(self, root, dirs, files):
-    # TODO: Check name case dupe for dirs here
     return dirs, files
     
   def handle_directory_pre(self, dir):
