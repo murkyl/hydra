@@ -203,7 +203,7 @@ def AddParserOptions(parser, raw_cli):
                       help="FQDN or IP address of the Hydra server.")
     parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Server processing options",
+    op_group = optparse.OptionGroup(parser, "[Server] Processing options",
                            "Options for processing.")
     op_group.add_option("--path", "-p",
                       default=None,
@@ -231,7 +231,7 @@ def AddParserOptions(parser, raw_cli):
 
     # EXAMPLE: Add or alter options specific for your application here
 
-    op_group = optparse.OptionGroup(parser, "Client Tuning parameters")
+    op_group = optparse.OptionGroup(parser, "[Client] Tuning parameters")
     op_group.add_option("--num_workers", "-n",
                       type="int",
                       default=0,
@@ -399,7 +399,7 @@ def main():
   # EXAMPLE: Add option validation code
   if options.server and not args:
     parser.print_help()
-    print("===========\nYou must specify a command execute in each directory")
+    print("===========\nYou must specify a command to execute in each directory")
     sys.exit(1)
 
   log = ConfigureLogging(options)
