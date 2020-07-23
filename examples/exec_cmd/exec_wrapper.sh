@@ -75,7 +75,7 @@ function check_params() {
 }
 
 function start_clients() {
-  echo "Starting clients with command: ${BASE_PATH}/$0 client ${SVR_IP}"
+  echo "Starting clients with command: bash ${BASE_PATH}/$0 client ${SVR_IP}"
   isi_for_array -X \
       screen -d -m -S exec_cmd \
       bash "${BASE_PATH}/$0 client ${SVR_IP}"
