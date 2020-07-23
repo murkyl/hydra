@@ -3,7 +3,7 @@
 Module description here
 """
 __title__ = "HydraClient"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = ["HydraClient", "HydraClientProcess"]
 __author__ = "Andrew Chung <acchung@gmail.com>"
 __license__ = "MIT"
@@ -335,7 +335,8 @@ class HydraClient(object):
     Fill in docstring
     """
     if num == 'auto':
-      num = multiprocessing.cpu_count()
+      num = int(multiprocessing.cpu_count()/2 + 0.5)
+      num = (num >= HydraUtils.MAX_DEFAULT_WORKERS)*HydraUtils.MAX_DEFAULT_WORKERS or num
     new_workers = num - self.num_workers
     if new_workers > 0:
       self.add_worker(new_workers)
@@ -425,7 +426,6 @@ class HydraClient(object):
     idle_count = 0
     start_time = time.time()
     self.init_process()
-    root = logging.getLogger()
     while not (self.state == STATE_SHUTDOWN):
       readable = []
       exceptional = []
@@ -514,14 +514,30 @@ class HydraClient(object):
           break
     self.log.debug("Client exiting")
     self._cleanup_all_workers()
+    # Wait a short time for any in-flight log messages from workers
+    start = time.time()
+    while (time.time() - start) <= HydraUtils.LOG_SVR_SHUTDOWN_TIMEOUT:
+      if not self.log_svr.is_alive():
+        break
+      time.sleep(HydraUtils.LOG_SVR_SHUTDOWN_SLEEP_INTERVAL)
   
   #
   # Internal methods
   #
   def _cleanup_all_workers(self):
+    wait_proc_list = []
     keys = list(self.workers.keys())
     for key in keys:
       self._cleanup_worker(key)
+    for w in list(self.shutdown_workers.keys()):
+      wait_proc_list.append(self.shutdown_workers[w]['obj'])
+    for w in list(self.shutdown_pending.keys()):
+      wait_proc_list.append(self.shutdown_pending[w]['obj'])
+    start = time.time()
+    while (time.time() - start) <= HydraUtils.WORKER_SHUTDOWN_TIMEOUT:
+      if not any([p.is_alive() for p in wait_proc_list]):
+        break
+      time.sleep(HydraUtils.WORKER_SHUTDOWN_SLEEP_INTERVAL)
   
   def _cleanup_worker(self, worker_id):
     """
@@ -533,13 +549,13 @@ class HydraClient(object):
       w = self.workers.pop(worker_id)
       self.inputs.remove(w['obj'])
       w['obj'].close()
-      self.shutdown_workers[worker_id] = {'stats': w['stats']}
+      self.shutdown_workers[worker_id] = {'stats': w['stats'], 'obj': w['obj']}
     elif worker_id in self.shutdown_pending.keys():
       self.log.log(9, "Cleaning shutdown pending worker dict: %s"%worker_id)
       w = self.shutdown_pending.pop(worker_id)
       self.inputs.remove(w['obj'])
       w['obj'].close()
-      self.shutdown_workers[worker_id] = {'stats': w['stats']}
+      self.shutdown_workers[worker_id] = {'stats': w['stats'], 'obj': w['obj']}
     self.log.log(9, "Remaining worker dict: %s"%self.workers)
     self.log.log(9, "Remaining shutdown pending worker dict: %s"%self.shutdown_pending)
     self.log.log(9, "Active inputs: %s"%self.inputs)
