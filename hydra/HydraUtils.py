@@ -3,7 +3,7 @@
 Module description here
 """
 __title__ = "HydraUtils"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = [
   "create_uuid_secret",
   "get_processing_paths",
@@ -53,11 +53,16 @@ except:
 
 
 MAX_BUFFER_READ_SIZE = 4194304
+MAX_DEFAULT_WORKERS = 8                                                         # Reasonable max number of workers when auto scaling
 SHORT_WAIT_TIMEOUT = 0.05
 LONG_WAIT_THRESHOLD = 20
 LONG_PROCESSING_THRESHOLD = 2.5
 HEARTBEAT_INTERVAL = 5                                                          # Time in seconds between each heartbeat
 SELECT_POLL_INTERVAL = 0.05
+WORKER_SHUTDOWN_TIMEOUT = 5
+WORKER_SHUTDOWN_SLEEP_INTERVAL = 0.1
+LOG_SVR_SHUTDOWN_TIMEOUT = 5
+LOG_SVR_SHUTDOWN_SLEEP_INTERVAL = 0.1
 IDLE_SHUTDOWN_THRESHOLD = 5*(HEARTBEAT_INTERVAL/SELECT_POLL_INTERVAL)
 DIRS_PER_IDLE_WORKER = 5
 DIRS_PER_IDLE_CLIENT = 5
@@ -232,6 +237,11 @@ class LogRecordStreamServer():
     
   def get_secret(self):
     return self.log_secret
+  
+  def is_alive(self):
+    if self.server_thread:
+      return self.server_thread.is_alive()
+    return False
 
   def handle(self):
     while not self.shutdown and self.inputs:
@@ -247,8 +257,11 @@ class LogRecordStreamServer():
             continue
           self.inputs.append(connection)
         else:
+          slen = 0
           msg_size = s.recv(4)
-          if len(msg_size) != 4:
+          if len(msg_size) == 4:
+            slen = struct.unpack('>L', msg_size)[0]
+          if slen == 0:
             self.inputs.remove(s)
             try:
               s.shutdown(socket.SHUT_RDWR)
@@ -258,8 +271,8 @@ class LogRecordStreamServer():
               s.close()
             except:
               pass
+            self.shutdown = True
             continue
-          slen = struct.unpack('>L', msg_size)[0]
           data = socket_recv(s, slen)
           record = logging.makeLogRecord(data)
           self.log_bytes += (slen + 4)
@@ -277,6 +290,7 @@ class LogRecordStreamServer():
         s.close()
       except:
         pass
+    logging.getLogger(self.name).debug("Bytes logged: %s in %s messages"%(self.log_bytes, self.log_entries))
     
   def start_logger(self):
     self.server_thread = threading.Thread(target=self.handle)
@@ -284,7 +298,6 @@ class LogRecordStreamServer():
     self.server_thread.start()
   
   def stop_logger(self):
-    logging.getLogger(self.name).debug("Bytes logged: %s in %s messages"%(self.log_bytes, self.log_entries))
     self.shutdown = True
 
   def _setup_log_socket(self, addr, port):
@@ -304,6 +317,7 @@ class SecureSocketHandler(logging.handlers.SocketHandler):
     # To allow simple dictconfig configuration, accept and discard kwargs
     super(SecureSocketHandler, self).__init__(host, port)
     self.secret = secret
+    self.msg_queue = []
 
   # Override of base class makeSocket to send a simple secret value on connect
   def makeSocket(self, timeout=1):
@@ -326,3 +340,30 @@ class SecureSocketHandler(logging.handlers.SocketHandler):
         result.close()
         raise
     return result
+
+  def emit(self, record):
+    """
+    Emit a record.
+    Pickles the record and writes it to the socket in binary format.
+    If there is an error with the socket, silently drop the packet.
+    If there was a problem with the socket, re-establishes the
+    socket.
+    
+    This can still lose messages if the self.sock.sendall() command
+    fails. May need to override the base class for send and also
+    queue messages there.
+    """
+    while self.msg_queue:
+      try:
+        msg = self.msg_queue[0]
+        self.send(msg)
+        self.msg_queue.pop(0)
+      except:
+        self.msg_queue.append(self.makePickle(record))
+        return
+    try:
+      s = self.makePickle(record)
+      self.send(s)
+    except Exception:
+      self.msg_queue.append(record)
+      self.handleError(record)
