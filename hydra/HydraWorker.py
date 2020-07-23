@@ -3,7 +3,7 @@
 Module description here
 """
 __title__ = "HydraWoker"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __all__ = ["HydraWorker"]
 __author__ = "Andrew Chung <acchung@gmail.com>"
 __license__ = "MIT"
@@ -227,7 +227,7 @@ class HydraWorker(Process):
     Fill in docstring
     """
     super(HydraWorker, self).__init__()
-    self.log = logging.getLogger()
+    self.log = logging.getLogger(__name__)
     self.args = deepcopy(args)
     self.fswalk = fswalk
     self.loopback_addr = args.get('loopback_addr', HydraUtils.LOOPBACK_ADDR)
@@ -491,13 +491,21 @@ class HydraWorker(Process):
         self.log.log(9, "Sending shutdown complete")
         self._send_client(CMD_STATE, STATE_SHUTDOWN)
       if self.client_conn:
-        self.client_conn.close()
+        try:
+          self.client_conn.close()
+        except:
+          pass
         self.client_conn = None
       if self.worker_conn:
-        self.worker_conn.close()
+        try:
+          self.worker_conn.close()
+        except:
+          pass
         self.worker_conn = None
     except Exception as e:
       self.log.exception(e)
+    if self.log.handlers and isinstance(self.log.handlers[0], HydraUtils.SecureSocketHandler):
+      self.log.handlers[0].close()
   
   def _connect_client(self):
     self.log.debug('Connecting to loopback client')
@@ -547,10 +555,11 @@ class HydraWorker(Process):
     for name, logger in logger_nodes:
       logger.handlers = []
     # Setup the socket handler and fall-back to the console
-    self.log = logging.getLogger()
+    root = logging.getLogger()
+    self.log = logging.getLogger(__name__)
     if self.args.get('logger_cfg') and self.args.get('port'):
-      self.log.setLevel(self.args['logger_cfg'].get('loggers', {}).get('', {}).get('level', logging.WARN))
-      self.log.handlers = [
+      root.setLevel(self.args['logger_cfg'].get('loggers', {}).get('', {}).get('level', logging.WARN))
+      root.handlers = [
         HydraUtils.SecureSocketHandler(
           host=self.args.get('host', HydraUtils.LOOPBACK_ADDR),
           port=self.args.get('port'),
@@ -558,7 +567,7 @@ class HydraWorker(Process):
         )
       ]
     else:
-      self.log.handlers = [logging.StreamHandler()]
+      root.handlers = [logging.StreamHandler()]
     
         
   def _queue_dirs(self, data):
@@ -674,6 +683,8 @@ class HydraWorker(Process):
       handled = self.handle_directory_pre(work_dir)
       if handled:
         self.stats['filtered_dirs'] += 1
+        # Subtract 1 from the processed_dirs stat to account for an increment later
+        self.stats['processed_dirs'] -= 1
       else:
         temp_work = []
         try:
