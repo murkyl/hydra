@@ -97,6 +97,7 @@ except:
   class WindowsError(OSError): pass
 # EXAMPLE:
 # Add any additional imports
+import stat
 import json
 import datetime
 
@@ -123,6 +124,10 @@ EXTRA_BASIC_STATS = [
   'deleted_files_size_logical_total',
   'deleted_files_size_512byte_block_total',
   'deleted_files_size_8kbyte_block_total',
+  'symlink_files',                          # Number of files that are symbolic links
+  'symlink_dirs',                           # Number of directories that are symbolic links
+  'error_stat_dirs',                        # Number of directory stat errors
+  'error_stat_files',                       # Number of file stat errors
 ]
 
 LOGGER_CONFIG = {
@@ -381,6 +386,25 @@ class WorkerHandler(hydra.WorkerClass):
     return dirs, files
     
   def handle_directory_pre(self, dir):
+    try:
+      dir_lstats = os.lstat(dir)
+    except WindowsError as e:
+      if e.winerror == 3 and len(dir) > hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH:
+        self.log.error('Unable to stat dir due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH)
+      else:
+        if hydra.is_invalid_windows_filename(dir):
+          self.log.error('Directory contains invalid characters or invalid names for Windows: %s'%dir)
+        else:
+          self.log.exception(e)
+      self.stats['error_stat_dirs'] += 1
+      return True
+    except Exception as e:
+      self.log.exception(e)
+      self.stats['error_stat_dirs'] += 1
+    if stat.S_ISLNK(dir_lstats.st_mode):
+      # We do not want to process a symlink so account for it here as a symlink
+      self.stats['symlink_dirs'] += 1
+      return True
     return False
     
   def handle_file(self, dir, file):
@@ -390,52 +414,66 @@ class WorkerHandler(hydra.WorkerClass):
     """
     # EXAMPLE:
     # Add your application code to handle each file
-    delete_file = False
-    time_delta = self.args['time_delta_sec']
-    current_time = self.args['current_time']
+    file_handled = True
     full_path_file = os.path.join(dir, file)
     try:
       file_lstats = os.lstat(full_path_file)
     except WindowsError as e:
-      if e.winerror == 3 and len(full_path_file) > 255:
-        self.log.error('Unable to stat file due to path length > 255 characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1')
-        return False
-    file_lstats = os.lstat(os.path.join(dir, file))
-    
-    '''Compare the access time to find a file that is older than X'''
-    if self.args['compare_atime']:
-      if (file_lstats.st_atime + time_delta) < current_time:
-        delete_file = True
-    '''Compare the creation time to find a file that is older than X'''
-    if self.args['compare_ctime']:
-      if (file_lstats.st_ctime + time_delta) < current_time:
-        delete_file = True
-    '''Compare the modified time to find a file that is older than X'''
-    if self.args['compare_mtime']:
-      if (file_lstats.st_mtime + time_delta) < current_time:
-        delete_file = True
-    
-    fsize = file_lstats.st_size
-    bs = self.args['block_size']
-    block_fsize = (fsize//bs + (not not fsize%bs))*bs
-    block_512_fsize = (fsize//512 + (not not fsize%512))*512
-    self.stats['file_size_logical_scanned'] += fsize
-    self.stats['file_size_logical_512byte_block_scanned'] += block_512_fsize
-    self.stats['file_size_logical_8kbyte_block_scanned'] += block_fsize
-    if delete_file:
-      if self.args.get('purge'):
-        try:
-          os.unlink(full_path_file)
-          self.audit.info(full_path_file)
-        except:
-          self.log.warn('Error deleting file: %s'%full_path_file)
+      if e.winerror == 3 and len(full_path_file) > hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH:
+        self.log.error('Unable to stat file due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH)
       else:
-        self.audit.info('Simulate delete: %s'%full_path_file)
-      self.stats['deleted_files'] += 1
-      self.stats['deleted_files_size_logical_total'] += fsize
-      self.stats['deleted_files_size_512byte_block_total'] += block_512_fsize
-      self.stats['deleted_files_size_8kbyte_block_total'] += block_fsize
-    return True
+        if hydra.is_invalid_windows_filename(file):
+          self.log.error('File contains invalid characters or invalid names for Windows: %s'%full_path_file)
+        else:
+          self.log.exception(e)
+      self.stats['error_stat_files'] += 1
+      return False
+    except Exception as e:
+      self.stats['error_stat_files'] += 1
+      return False
+    
+    if stat.S_ISREG(file_lstats.st_mode):
+      time_delta = self.args['time_delta_sec']
+      current_time = self.args['current_time']
+      delete_file = False
+      '''Compare the access time to find a file that is older than X'''
+      if self.args['compare_atime']:
+        if (file_lstats.st_atime + time_delta) < current_time:
+          delete_file = True
+      '''Compare the creation time to find a file that is older than X'''
+      if self.args['compare_ctime']:
+        if (file_lstats.st_ctime + time_delta) < current_time:
+          delete_file = True
+      '''Compare the modified time to find a file that is older than X'''
+      if self.args['compare_mtime']:
+        if (file_lstats.st_mtime + time_delta) < current_time:
+          delete_file = True
+      
+      fsize = file_lstats.st_size
+      bs = self.args['block_size']
+      block_fsize = (fsize//bs + (not not fsize%bs))*bs
+      block_512_fsize = (fsize//512 + (not not fsize%512))*512
+      self.stats['file_size_logical_scanned'] += fsize
+      self.stats['file_size_logical_512byte_block_scanned'] += block_512_fsize
+      self.stats['file_size_logical_8kbyte_block_scanned'] += block_fsize
+      if delete_file:
+        if self.args.get('purge'):
+          try:
+            os.unlink(full_path_file)
+            self.audit.info(full_path_file)
+          except:
+            self.log.warn('Error deleting file: %s'%full_path_file)
+        else:
+          self.audit.info('Simulate delete: %s'%full_path_file)
+        self.stats['deleted_files'] += 1
+        self.stats['deleted_files_size_logical_total'] += fsize
+        self.stats['deleted_files_size_512byte_block_total'] += block_512_fsize
+        self.stats['deleted_files_size_8kbyte_block_total'] += block_fsize
+    elif stat.S_ISLNK(file_lstats.st_mode):
+      # We didn't really process a symlink so account for it here as a symlink
+      self.stats['symlink_files'] += 1
+      file_handled = False
+    return file_handled
     
   def handle_update_settings(self, cmd):
     self.args.update(cmd['settings'])
