@@ -105,7 +105,10 @@ except ImportError:
   if scandir_path:
     from sys import path
     path.insert(0, os.path.join(base_path, 'lib', scandir_path))
-    import scandir
+    try:
+      import scandir
+    except:
+      scandir = os
   else:
     scandir = os
   fswalk = scandir.walk

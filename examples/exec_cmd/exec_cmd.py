@@ -175,9 +175,15 @@ def ConfigureLogging(options):
   log = logging.getLogger()
   # Perform log rollover after logging system is initialized
   if options.log:
-    log.handlers[0].doRollover()
+    try:
+      log.handlers[0].doRollover()
+    except:
+      pass
   if options.audit:
-    logging.getLogger('audit').handlers[0].doRollover()
+    try:
+      logging.getLogger('audit').handlers[0].doRollover()
+    except:
+      pass
   return log
 
 '''
@@ -201,6 +207,13 @@ def AddParserOptions(parser, raw_cli):
   op_group.add_option("--connect", "-c",
                     default=None,
                     help="FQDN or IP address of the Hydra server.")
+  op_group.add_option("--src_addr",
+                    default='',
+                    help="Source address to bind socket. Uses system chosen address if none specified.")
+  op_group.add_option("--src_port",
+                    type="int",
+                    default=0,
+                    help="Source port to bind socket. Uses system chosen port if none specified.")
   parser.add_option_group(op_group)
 
   op_group = optparse.OptionGroup(parser, "[Server] Processing options",
@@ -490,6 +503,8 @@ def main():
         'logger_cfg': LOGGER_CONFIG,
         'dirs_per_idle_worker': options.dirs_per_worker,
         'select_poll_interval': options.select_poll_interval,
+        'source_addr': options.src_addr,
+        'source_port': options.src_port,
         # EXAMPLE:
         # Application specific variables
     }

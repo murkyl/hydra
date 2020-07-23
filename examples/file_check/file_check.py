@@ -186,104 +186,117 @@ def ConfigureLogging(options):
   log = logging.getLogger()
   # Perform log rollover after logging system is initialized
   if options.log:
-    log.handlers[0].doRollover()
+    try:
+      log.handlers[0].doRollover()
+    except:
+      pass
   if options.audit:
-    logging.getLogger('audit').handlers[0].doRollover()
+    try:
+      logging.getLogger('audit').handlers[0].doRollover()
+    except:
+      pass
   return log
 
 '''
 Add command line options
 '''
 def AddParserOptions(parser, raw_cli):
-    parser.add_option("--port",
-                      default=hydra.Utils.DEFAULT_LISTEN_PORT,
-                      help="Port to listen when running as a server and port to connect to as a client.")
-    op_group = optparse.OptionGroup(parser, "Server settings")
-    op_group.add_option("--server", "-s",
-                      action="store_true",
-                      default=False,
-                      help="Act as the Hydra server.")
-    op_group.add_option("--listen",
-                      default=None,
-                      help="IP address to bind to when run as a server. The default will listen to all interfaces.")
-    parser.add_option_group(op_group)
+  parser.add_option("--port",
+                    default=hydra.Utils.DEFAULT_LISTEN_PORT,
+                    help="Port to listen when running as a server and port to connect to as a client.")
+  op_group = optparse.OptionGroup(parser, "Server settings")
+  op_group.add_option("--server", "-s",
+                    action="store_true",
+                    default=False,
+                    help="Act as the Hydra server.")
+  op_group.add_option("--listen",
+                    default=None,
+                    help="IP address to bind to when run as a server. The default will listen to all interfaces.")
+  parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Client settings")
-    op_group.add_option("--connect", "-c",
-                      default=None,
-                      help="FQDN or IP address of the Hydra server.")
-    op_group.add_option("--num_workers", "-n",
-                      type="int",
-                      default=0,
-                      help="For clients, specifies the number of worker processes to launch. A value of 0 will have"
-                           " the system set this to the number of CPU cores available. [Default: %default]")
-    parser.add_option_group(op_group)
+  op_group = optparse.OptionGroup(parser, "Client settings")
+  op_group.add_option("--connect", "-c",
+                    default=None,
+                    help="FQDN or IP address of the Hydra server.")
+  op_group.add_option("--src_addr",
+                    default='',
+                    help="Source address to bind socket. Uses system chosen address if none specified.")
+  op_group.add_option("--src_port",
+                    type="int",
+                    default=0,
+                    help="Source port to bind socket. Uses system chosen port if none specified.")
+  parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Processing",
-                           "Options for processing.")
-    op_group.add_option("--path", "-p",
-                      default=None,
-                      action="store",
-                      help="Path to scan. Use of full paths is recommended as "
-                           "clients will interpret this path according to their"
-                           " own current working directory.")
-    op_group.add_option("--path_file", "-f",
-                      default=None,
-                      help="File name with a CR/LF separated list of paths to process. Any leading or trailing "
-                           "whitespace is preserved.")
-    op_group.add_option("--path_prefix_file",
-                      default=None,
-                      action="store",
-                      help="Path to a file holding prefixes to prepend to "
-                           "the path specified by the --path parameters. This "
-                           "can be used to allow this client to process the "
-                           "directory walk across parallel mounts/shares to "
-                           "improve directory walk performance.")
+  op_group = optparse.OptionGroup(parser, "[Server] Processing options",
+                         "Options for processing.")
+  op_group.add_option("--path", "-p",
+                    default=None,
+                    action="store",
+                    help="Path to scan. Use of full paths is recommended as "
+                         "clients will interpret this path according to their"
+                         " own current working directory.")
+  op_group.add_option("--path_file", "-f",
+                    default=None,
+                    help="File name with a CR/LF separated list of paths to process. Any leading or trailing "
+                         "whitespace is preserved.")
+  op_group.add_option("--path_prefix_file",
+                    default=None,
+                    action="store",
+                    help="Path to a file holding prefixes to prepend to "
+                         "the path specified by the --path parameters. This "
+                         "can be used to allow this client to process the "
+                         "directory walk across parallel mounts/shares to "
+                         "improve directory walk performance.")
 
-    # EXAMPLE: Add or alter options specific for your application here
-    op_group = optparse.OptionGroup(parser, "File and path check criteria")
-    op_group.add_option("--check_encoding",
-                      action="store_true",
-                      default=DEFAULT_CONFIG['check_encoding'],
-                      help="Check character encoding of directories and files is UTF-8")
-    parser.add_option_group(op_group)
+  # EXAMPLE: Add or alter options specific for your application here
+  op_group = optparse.OptionGroup(parser, "File and path check criteria")
+  op_group.add_option("--check_encoding",
+                    action="store_true",
+                    default=DEFAULT_CONFIG['check_encoding'],
+                    help="Check character encoding of directories and files is UTF-8")
+  parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Tuning parameters")
-    op_group.add_option("--dirs_per_worker",
-                      type="int",
-                      default=hydra.Utils.DIRS_PER_IDLE_WORKER,
-                      help="How many directories to issue per idle worker [Default: %default]")
-    op_group.add_option("--dirs_per_client",
-                      type="int",
-                      default=hydra.Utils.DIRS_PER_IDLE_CLIENT,
-                      help="How many directories to issue per idle client [Default: %default]")
-    op_group.add_option("--select_poll_interval",
-                      type="float",
-                      default=hydra.Utils.SELECT_POLL_INTERVAL,
-                      help="Polling time in seconds (float) between select calls [Default: %default]")
-    parser.add_option_group(op_group)
+  op_group = optparse.OptionGroup(parser, "[Client] Tuning parameters")
+  op_group.add_option("--num_workers", "-n",
+                    type="int",
+                    default=0,
+                    help="For clients, specifies the number of worker processes to launch. A value of 0 will have"
+                         " the system set this to the number of CPU cores available. [Default: %default]")
+  op_group.add_option("--dirs_per_worker",
+                    type="int",
+                    default=hydra.Utils.DIRS_PER_IDLE_WORKER,
+                    help="How many directories to issue per idle worker [Default: %default]")
+  op_group.add_option("--dirs_per_client",
+                    type="int",
+                    default=hydra.Utils.DIRS_PER_IDLE_CLIENT,
+                    help="How many directories to issue per idle client [Default: %default]")
+  op_group.add_option("--select_poll_interval",
+                    type="float",
+                    default=hydra.Utils.SELECT_POLL_INTERVAL,
+                    help="Polling time in seconds (float) between select calls [Default: %default]")
+  parser.add_option_group(op_group)
 
-    op_group = optparse.OptionGroup(parser, "Logging, auditing and debug")
-    op_group.add_option("--log", "-l",
-                      default=None,
-                      help="Log to this file instead of the console.")
-    op_group.add_option("--audit", "-a",
-                      default=None,
-                      help="Log audit events to this file instead of the console.")
-    op_group.add_option("--quiet", "-q",
-                      action="store_true",
-                      default=False,
-                      help="Disable console stats output.")
-    op_group.add_option("--verbose", "-v",
-                      action="store_true",
-                      default=False,
-                      help="Show verbose output.")
-    op_group.add_option("--debug",
-                      action="count",
-                      default=0,
-                      help="Enable debug. Add additional --debug for more detailed debug up to 3 total."
-                          " Use --verbose in conjunction with --debug to turn on sub module debugging.")
-    parser.add_option_group(op_group)
+  op_group = optparse.OptionGroup(parser, "Logging, auditing and debug")
+  op_group.add_option("--log", "-l",
+                    default=None,
+                    help="Log to this file instead of the console.")
+  op_group.add_option("--audit", "-a",
+                    default=None,
+                    help="Log audit events to this file instead of the console.")
+  op_group.add_option("--quiet", "-q",
+                    action="store_true",
+                    default=False,
+                    help="Disable console stats output.")
+  op_group.add_option("--verbose", "-v",
+                    action="store_true",
+                    default=False,
+                    help="Show verbose output.")
+  op_group.add_option("--debug",
+                    action="count",
+                    default=0,
+                    help="Enable debug. Add additional --debug for more detailed debug up to 3 total."
+                        " Use --verbose in conjunction with --debug to turn on sub module debugging.")
+  parser.add_option_group(op_group)
 
 
 class WorkerHandler(hydra.WorkerClass):
@@ -547,6 +560,8 @@ def main():
         'logger_cfg': LOGGER_CONFIG,
         'dirs_per_idle_worker': options.dirs_per_worker,
         'select_poll_interval': options.select_poll_interval,
+        'source_addr': options.src_addr,
+        'source_port': options.src_port,
         # EXAMPLE:
         # Application specific variables
     }

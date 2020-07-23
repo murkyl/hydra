@@ -223,6 +223,8 @@ class HydraClient(object):
 
     # Variables dealing with server and worker communication
     self.server = None
+    self.source_addr = self.args.get('source_addr', 0)
+    self.source_port = int(self.args.get('source_port', 0))
     # Sockets from which we expect to read from through a select call
     self.inputs = []
     
@@ -305,7 +307,11 @@ class HydraClient(object):
     """
     Fill in docstring
     """
-    self.server = socket.create_connection((server_addr, server_port))
+    self.server = socket.create_connection(
+      (server_addr, server_port),
+      socket.getdefaulttimeout(),
+      (self.source_addr, self.source_port)
+    )
     if not self.server:
       raise Except('Unable to connect to server %s:%s. Check address, port and firewalls.'%(server_addr, server_port))
     self.server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, True)
@@ -946,6 +952,10 @@ class HydraClientProcess(multiprocessing.Process):
       self.client = None
       if e.errno == errno.ECONNREFUSED:
         msg = 'Connection to server refused. Check address, port and firewalls'
+        logging.getLogger().critical(msg)
+        sys.exit(1)
+      elif e.errno == -2:
+        msg = 'Unable to resolve server name: %s'%self.server_addr
         logging.getLogger().critical(msg)
         sys.exit(1)
       else:
