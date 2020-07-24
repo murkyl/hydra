@@ -315,6 +315,18 @@ class WorkerHandler(hydra.WorkerClass):
     
     # Set the audit log level to INFO, otherwise only WARNING and above get logged
     self.audit.setLevel(logging.INFO)
+    match = re.match(r'.*\:(?P<id>[0-9]+)', self.name)
+    if match:
+      match_dict = match.groupdict()
+    else:
+      match_dict = {}
+    base, ext = os.path.splitext(self.args['logger_cfg']['handlers']['audit']['filename'])
+    worker_audit_file = "%s-%s%s"%(base, match_dict.get('id', '1'), ext)
+    self.audit.handlers = [logging.handlers.RotatingFileHandler(
+      worker_audit_file,
+      backupCount=5,
+    )]
+    self.audit.propagate = False
     
   def init_stats(self):
     super(WorkerHandler, self).init_stats()
