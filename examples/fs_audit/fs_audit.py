@@ -470,9 +470,6 @@ def AddParserOptions(parser, raw_cli):
                     default=None,
                     help="If specified, we will log to this file instead of the console. This is "
                          "required for logging on Windows platforms.")
-  op_group.add_option("--audit", "-a",
-                    default=None,
-                    help="If specified, we will log audit events to this file instead of the console.")
   op_group.add_option("--quiet", "-q",
                     action="store_true",
                     default=False,
