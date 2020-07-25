@@ -968,14 +968,14 @@ class HydraClientProcess(multiprocessing.Process):
       self.client = None
       if e.errno == errno.ECONNREFUSED:
         msg = 'Connection to server refused. Check address, port and firewalls'
-        logging.getLogger().critical(msg)
-        sys.exit(1)
+      elif e.errno == 113:
+        msg = 'No route to host. Check address, port and firewalls'
       elif e.errno == -2:
         msg = 'Unable to resolve server name: %s'%self.server_addr
-        logging.getLogger().critical(msg)
-        sys.exit(1)
       else:
-        raise e
+        raise(e)
+      logging.getLogger().critical(msg)
+      sys.exit(1)
     except Exception as se:
       logging.getLogger().exception(se)
       raise(se)
