@@ -352,6 +352,31 @@ class HydraWorker(Process):
     """
     pass
     
+  def init_process_logging(self):
+    """
+    Called by the main loop at the beginning before init_process is called.
+    The derived class can override this method to redirect logging.
+    """
+    # Reset all the handlers for each logger to leave only the root handler
+    # as the workers should communicate to the client over the socket handler
+    logger_nodes = list(logging.root.manager.loggerDict.items())
+    for name, logger in logger_nodes:
+      logger.handlers = []
+    # Setup the socket handler and fall-back to the console
+    root = logging.getLogger()
+    self.log = logging.getLogger(__name__)
+    if self.args.get('logger_cfg') and self.args.get('port'):
+      root.setLevel(self.args['logger_cfg'].get('loggers', {}).get('', {}).get('level', logging.WARN))
+      root.handlers = [
+        HydraUtils.SecureSocketHandler(
+          host=self.args.get('host', HydraUtils.LOOPBACK_ADDR),
+          port=self.args.get('port'),
+          secret=self.args.get('secret'),
+        )
+      ]
+    else:
+      root.handlers = [logging.StreamHandler()]
+        
   def init_stats(self):
     """
     Fill in docstring
@@ -409,7 +434,7 @@ class HydraWorker(Process):
     """
     Fill in docstring
     """
-    self._init_process_logging()
+    self.init_process_logging()
     self.init_process()
     self.log.debug("PID: %d, Process name: %s"%(self.pid, self.name))
     wait_count = 0
@@ -548,28 +573,6 @@ class HydraWorker(Process):
       return(zlib.compress(pickle.dumps(self.stats, protocol=pickle.HIGHEST_PROTOCOL)))
     return self.stats
     
-  def _init_process_logging(self):
-    # Reset all the handlers for each logger to leave only the root handler
-    # as the workers should communicate to the client over the socket handler
-    logger_nodes = list(logging.root.manager.loggerDict.items())
-    for name, logger in logger_nodes:
-      logger.handlers = []
-    # Setup the socket handler and fall-back to the console
-    root = logging.getLogger()
-    self.log = logging.getLogger(__name__)
-    if self.args.get('logger_cfg') and self.args.get('port'):
-      root.setLevel(self.args['logger_cfg'].get('loggers', {}).get('', {}).get('level', logging.WARN))
-      root.handlers = [
-        HydraUtils.SecureSocketHandler(
-          host=self.args.get('host', HydraUtils.LOOPBACK_ADDR),
-          port=self.args.get('port'),
-          secret=self.args.get('secret'),
-        )
-      ]
-    else:
-      root.handlers = [logging.StreamHandler()]
-    
-        
   def _queue_dirs(self, data):
     """
     Fill in docstring
