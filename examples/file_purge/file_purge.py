@@ -364,18 +364,20 @@ class WorkerHandler(hydra.WorkerClass):
     super(WorkerHandler, self).__init__(args)
     self.args = dict(DEFAULT_CONFIG)
     self.args.update(args)
+    
+  def init_process_logging(self):
     # EXAMPLE:
     # You can configure additional loggers by adding new variables and using
     # the correct logger name
+    logger_nodes = list(logging.root.manager.loggerDict.items())
+    for name, logger in logger_nodes:
+      logger.handlers = []
+    root = logging.getLogger()
+    self.log = logging.getLogger(__name__)
     self.audit = logging.getLogger('audit')
-    
-  def init_process(self):
-    # EXAMPLE:
-    # Add any initialization that is required after worker starts
-
     # Set the audit log level to INFO, otherwise only WARNING and above get logged
-    # Set each worker to audit to their own audit file.
     self.audit.setLevel(logging.INFO)
+    # Set each worker to audit to their own audit file.
     match = re.match(r'.*\:(?P<id>[0-9]+)', self.name)
     if match:
       match_dict = match.groupdict()
@@ -388,6 +390,11 @@ class WorkerHandler(hydra.WorkerClass):
       backupCount=5,
     )]
     self.audit.propagate = False
+  
+  def init_process(self):
+    # EXAMPLE:
+    # Add any initialization that is required after worker starts
+    pass
     
   def init_stats(self):
     super(WorkerHandler, self).init_stats()
