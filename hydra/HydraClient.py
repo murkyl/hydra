@@ -757,6 +757,7 @@ class HydraClient(object):
         work_type = work_item.get('type', None)
         return_items.append(work_item)
       self._send_server(CMD_CLIENT_WORK, {'work_items': return_items})
+      self.server_waiting_for_work = False
     else:
       # Check and retrieve work items from workers if not all workers are active
       self._get_worker_work_items(forced=True)
