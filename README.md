@@ -3,7 +3,7 @@ Parallel file system walker framework
 
 # Overview
 
-Hydra is has a client/server model for operation. The server does not do any actual processing but instead coordinates
+Hydra has a client/server model for operation. The server does not do any actual processing but instead coordinates
  directories to process between one or more clients. The client and server communications are performed over raw TCP
  sockets using a simple internal messaging system. Each client starts up in a listening mode for a connection from the
  server. Once the server completes connecting to all configured clients, processing begins.
@@ -16,7 +16,7 @@ The server takes the configured path and sends it to one client for processing. 
  then all processing for the configured path will have been completed.
  
 The client itself does no work and relies on one or more worker processes to perform the actual processing. Each worker
- is run in its own thread in order to avoid the Python GIL locking issue. Workers will behave in the same manner as the
+ is run in its own process in order to avoid the Python GIL locking issue. Workers will behave in the same manner as the
  client and server in terms of communications and work distribution.
 
 When a worker receives a directory or directories to process, it will start processing the directory by getting a list
