@@ -243,6 +243,20 @@ class HydraWorker(Process):
     self._init_state_table(HYDRA_WORKER_STATE_TABLE)
     self._process_state_event(EVENT_CONNECT)
     
+  def __del__(self):
+    if self.client_conn:
+      try:
+        self.client_conn.close()
+      except:
+        pass
+      self.client_conn = None
+    if self.worker_conn:
+      try:
+        self.worker_conn.close()
+      except:
+        pass
+      self.worker_conn = None
+    
   def filter_subdirectories(self, root, dirs, files):
     """
     This method should filter a list of files and directories to process.
@@ -518,15 +532,13 @@ class HydraWorker(Process):
       if self.client_conn:
         try:
           self.client_conn.close()
-        except:
-          pass
-        self.client_conn = None
+        finally:
+          self.client_conn = None
       if self.worker_conn:
         try:
           self.worker_conn.close()
-        except:
-          pass
-        self.worker_conn = None
+        finally:
+          self.worker_conn = None
     except Exception as e:
       self.log.exception(e)
     if self.log.handlers and isinstance(self.log.handlers[0], HydraUtils.SecureSocketHandler):
