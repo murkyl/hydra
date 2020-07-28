@@ -12,11 +12,10 @@ import logging.config
 import select
 import socket
 
-if __package__ is None:
-  # Test code is run from the ./test directory. Add the parent directory to the path
-  current_file = inspect.getfile(inspect.currentframe())
-  base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
-  sys.path.insert(0, base_path)
+# Test code is run from the ./test directory. Add the parent directory to the path
+current_file = inspect.getfile(inspect.currentframe())
+base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
+sys.path.insert(0, base_path)
 import hydra
 
 TEST_PATH = os.path.join('test', 'data')
@@ -209,7 +208,6 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
         readable, _, _ = select.select(self.workers, [], [], sleep_seconds)
       except KeyboardInterrupt:
         logging.getLogger().debug("Child processed caught keyboard interrupt waiting for event")
-        self._set_state('shutdown')
         continue
         
       for s in readable:
@@ -221,6 +219,7 @@ class TestHydraWorkerSpawnAndShutdown(unittest.TestCase):
           self.workers.remove(s)
       if not self.workers:
         break
+    self.assertEqual(len(self.workers), 0)
     self.cleanup_workers()
 
       
