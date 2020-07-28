@@ -47,7 +47,7 @@ if [ "${TYPE}" == "SSH" ]; then
   #   to use the server's hostname. Change this parameter to fit your
   #   environment if you are using SSH.
   SVR_IP=${SVR_IP-`hostname`}
-elif [ "${TYPE}" == "SSH" ]; then
+elif [ "${TYPE}" == "ONEFS" ]; then
   SVR_IP=${SVR_IP-`isi_nodes -L "%{internal}"`}
 fi
 
