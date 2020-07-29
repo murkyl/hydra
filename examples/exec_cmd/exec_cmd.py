@@ -28,18 +28,18 @@ __description__="""Requirements:
   python 2.7+
 
 Description:
-  {p} will recursively run [commands] to on every file and subdirectory
-  locally on a OneFS file system starting from <start_path>.
+  {p} will recursively run [commands] on every subdirectory starting from
+  <start_path>. The string '{{}}' will be replaced with the current directory
+  anywhere it is found in the [commands].
   The [commands] will be split among multiple threads and possibly multiple
   nodes to increase the speed of processing.
-
-  The [commands] must take as the last parameter a full directory with a
-  file glob. Essentially a string in the form: /full/path/* will be appended
-  to the [commands].
+  
+  The script uses a full shell to execute the command. If you require a file
+  glob to process all files in a directory, include it into the command.
 
   Example commands:
-    chown someuser
-    chmod +a user someuser allow dir_gen_all""".format(p=__title__)
+    chown someusr {{}}/*
+    chmod +a user someuser allow dir_gen_all {{}}/*""".format(p=__title__)
 
 import inspect
 import os
@@ -304,17 +304,18 @@ class WorkerHandler(hydra.WorkerClass):
     
     # Set the audit log level to INFO, otherwise only WARNING and above get logged
     self.audit.setLevel(logging.INFO)
-    match = re.match(r'.*\:(?P<id>[0-9]+)', self.name)
-    if match:
-      match_dict = match.groupdict()
-    else:
-      match_dict = {}
-    base, ext = os.path.splitext(self.args['logger_cfg']['handlers']['audit']['filename'])
-    worker_audit_file = "%s-%s%s"%(base, match_dict.get('id', '1'), ext)
-    self.audit.handlers = [logging.handlers.RotatingFileHandler(
-      worker_audit_file,
-      backupCount=5,
-    )]
+    if self.args['logger_cfg']['handlers']['audit']['filename']:
+      match = re.match(r'.*\:(?P<id>[0-9]+)', self.name)
+      if match:
+        match_dict = match.groupdict()
+      else:
+        match_dict = {}
+      base, ext = os.path.splitext(self.args['logger_cfg']['handlers']['audit']['filename'])
+      worker_audit_file = "%s-%s%s"%(base, match_dict.get('id', '1'), ext)
+      self.audit.handlers = [logging.handlers.RotatingFileHandler(
+        worker_audit_file,
+        backupCount=5,
+      )]
     self.audit.propagate = False
     
   def init_stats(self):
@@ -336,14 +337,19 @@ class WorkerHandler(hydra.WorkerClass):
   def handle_directory_pre(self, dir):
     with open(os.devnull, 'w') as devnull:
       try:
-        proc = subprocess.Popen("%s %s/*"%(' '.join(self.args['exec_cmd']), dir),
+        raw_cmd = ' '.join(self.args['exec_cmd'])
+        self.log.critical("DEBUG: RAW: %s"%raw_cmd)
+        cmd = raw_cmd.replace('{}', dir)
+        self.log.critical("DEBUG: SUBST: %s"%cmd)
+        proc = subprocess.Popen(
+          cmd,
           shell=True,
           stdout=devnull,
           stderr=subprocess.PIPE)
         (proc_out, proc_err) = proc.communicate()
         if proc.returncode != 0:
-          self.log.error("Non-zero return code on directory: %s"%dir)
-          self.log.error("CMD run: %s %s/*"%(' '.join(self.args['exec_cmd']), dir))
+          self.log.error("Non-zero (%d) return code on directory: %s"%(proc.returncode, dir))
+          self.log.error("CMD run: %s"%cmd)
           if self.args.get('log_stderr'):
             self.log.error("Command STDERR: %s"%proc_err)
       except Exception as e:
