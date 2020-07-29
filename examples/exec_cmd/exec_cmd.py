@@ -67,6 +67,7 @@ except:
 # Add any additional imports
 import json
 import subprocess
+import re
 
 try:
   bytes('A', encoding='utf-8')
@@ -190,9 +191,6 @@ def ConfigureLogging(options):
 Add command line options
 '''
 def AddParserOptions(parser, raw_cli):
-  parser.add_option("--port",
-                    default=hydra.Utils.DEFAULT_LISTEN_PORT,
-                    help="Port to listen when running as a server and port to connect to as a client.")
   op_group = optparse.OptionGroup(parser, "Server settings")
   op_group.add_option("--server", "-s",
                     action="store_true",
@@ -201,6 +199,9 @@ def AddParserOptions(parser, raw_cli):
   op_group.add_option("--listen",
                     default=None,
                     help="IP address to bind to when run as a server. The default will listen to all interfaces.")
+  op_group.add_option("--port",
+                    default=hydra.Utils.DEFAULT_LISTEN_PORT,
+                    help="Port to listen when running as a server and port to connect to as a client.")
   parser.add_option_group(op_group)
 
   op_group = optparse.OptionGroup(parser, "Client settings")
@@ -334,16 +335,19 @@ class WorkerHandler(hydra.WorkerClass):
     
   def handle_directory_pre(self, dir):
     with open(os.devnull, 'w') as devnull:
-      proc = subprocess.Popen("%s %s/*"%(' '.join(self.args['exec_cmd']), dir),
-        shell=True,
-        stdout=devnull,
-        stderr=subprocess.PIPE)
-      (proc_out, proc_err) = proc.communicate()
-      if proc.returncode != 0:
-        self.log.error("Non-zero return code on directory: %s"%dir)
-        self.log.error("CMD run: %s %s/*"%(' '.join(self.args['exec_cmd']), dir))
-        if self.args.get('log_stderr'):
-          self.log.error("Command STDERR: %s"%proc_err)
+      try:
+        proc = subprocess.Popen("%s %s/*"%(' '.join(self.args['exec_cmd']), dir),
+          shell=True,
+          stdout=devnull,
+          stderr=subprocess.PIPE)
+        (proc_out, proc_err) = proc.communicate()
+        if proc.returncode != 0:
+          self.log.error("Non-zero return code on directory: %s"%dir)
+          self.log.error("CMD run: %s %s/*"%(' '.join(self.args['exec_cmd']), dir))
+          if self.args.get('log_stderr'):
+            self.log.error("Command STDERR: %s"%proc_err)
+      except Exception as e:
+        self.log.error("Command error: %s"%e)
     return False
     
   #def handle_file(self, dir, file):
