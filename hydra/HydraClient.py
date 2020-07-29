@@ -223,7 +223,7 @@ class HydraClient(object):
 
     # Variables dealing with server and worker communication
     self.server = None
-    self.source_addr = self.args.get('source_addr', 0)
+    self.source_addr = self.args.get('source_addr', '')
     self.source_port = int(self.args.get('source_port', 0))
     # Sockets from which we expect to read from through a select call
     self.inputs = []
@@ -236,6 +236,11 @@ class HydraClient(object):
     """
     pass
     
+  def init_process_logging(self):
+    if not len(logging.getLogger().handlers):
+      if self.args.get('logger_cfg'):
+        logging.config.dictConfig(self.args['logger_cfg'])
+  
   def init_stats(self, stat_state):
     """
     This method is called to initialize the statistics of this client.
@@ -360,6 +365,8 @@ class HydraClient(object):
       self.inputs.append(worker)
       self._init_worker_state(worker)
       self.num_workers += 1
+      # Using a short delay before starting a worker to not spawn a lot of processes all at the same time
+      time.sleep(HydraUtils.SHORT_WAIT_TIMEOUT/2.0)
       worker.start()
     
   def remove_worker(self, num=1):
@@ -520,6 +527,11 @@ class HydraClient(object):
       if not self.log_svr.is_alive():
         break
       time.sleep(HydraUtils.LOG_SVR_SHUTDOWN_SLEEP_INTERVAL)
+    if self.server:
+      try:
+        self.server.close()
+      finally:
+        self.server = None
   
   #
   # Internal methods
@@ -795,10 +807,15 @@ class HydraClient(object):
     if self.server:
       self.inputs.remove(self.server)
       try:
-        self.server.close()
+        self.server.shutdown(socket.SHUT_RDWR)
       except:
         pass
-      self.server = None
+      try:
+        self.server.close()
+      except Exception as e:
+        pass
+      finally:
+        self.server = None
 
   # State machine methods
   def _init_state_table(self, state_dict):
@@ -949,19 +966,14 @@ class HydraClientProcess(multiprocessing.Process):
     self.num_workers = 0
     self.client = None
     
-  def init_process_logging(self):
-    if not len(logging.getLogger().handlers):
-      if self.args.get('logger_cfg'):
-        logging.config.dictConfig(self.args['logger_cfg'])
-  
   def set_workers(self, num_workers=0):
     '''Number of worker processes per client. A value of 0 lets the client
     automatically adjust to the number of CPU cores'''
     self.num_workers = num_workers
     
   def run(self):
-    self.init_process_logging()
     self.client = self.handler(self.file_handler, self.args)
+    self.client.init_process_logging()
     logging.getLogger().debug("PID: %d, Process name: %s"%(self.pid, self.name))
     try:
       self.client.connect(self.server_addr, self.server_port)
