@@ -158,7 +158,6 @@ class HydraServer(object):
     self.init_stats(self.stats)
     self._init_state_table(HYDRA_SERVER_STATE_TABLE)
     self.work_paths = []
-    self.log.critical("SVR CRIT")
     
     # Variables dealing with server and client communication
     self.server = None
