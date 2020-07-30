@@ -668,22 +668,28 @@ class HydraServer(object):
   def _shutdown_cleanup(self):
     try:
       self.svr_side_conn.shutdown(socket.SHUT_RDWR)
-      self.svr_side_conn.close()
     except:
       pass
-    self.svr_side_conn = None
+    try:
+      self.svr_side_conn.close()
+    finally:
+      self.svr_side_conn = None
     try:
       self.ui_side_conn.shutdown(socket.SHUT_RDWR)
-      self.ui_side_conn.close()
     except:
       pass
-    self.ui_side_conn = None
+    try:
+      self.ui_side_conn.close()
+    finally:
+      self.ui_side_conn = None
     try:
       self.server.shutdown(socket.SHUT_RDWR)
-      self.server.close()
     except:
       pass
-    self.server = None
+    try:
+      self.server.close()
+    finally:
+      self.server = None
 
   # State machine methods
   def _init_state_table(self, state_dict):

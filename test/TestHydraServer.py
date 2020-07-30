@@ -20,14 +20,47 @@ RANDOM_DATA_BUF_SIZE = 1024*1024*4
 POLL_WAIT_SECONDS = 5
 FILE_DELAY = 0.25
 
-if __package__ is None:
-    # test code is run from the ./test directory.  add the parent
-    # directory to the path
-    current_file = inspect.getfile(inspect.currentframe())
-    base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
-    sys.path.insert(0, base_path)
+# test code is run from the ./test directory.  add the parent
+# directory to the path
+current_file = inspect.getfile(inspect.currentframe())
+base_path = os.path.dirname(os.path.dirname(os.path.abspath(current_file)))
+sys.path.insert(0, base_path)
 import hydra
 
+LOGGER_CONFIG = {
+  'version': 1,
+  'disable_existing_loggers': False,
+  'formatters': {
+    'default': {
+      'format': '%(asctime)s [%(levelname)8s] %(name)s - %(process)d : %(message)s',
+    },
+    'debug': {
+      'format': '%(asctime)s [%(levelname)8s] %(name)s [%(funcName)s (%(lineno)d)] - %(process)d : %(message)s',
+    },
+    'simple': {
+      'format': '%(message)s',
+    },
+  },
+  'handlers': {
+    'default': { 
+      'formatter': 'default',
+      'class': 'logging.StreamHandler',
+      'stream': 'ext://sys.stdout',
+    },
+  },
+  'loggers': {
+    '': {
+      'handlers': ['default'],
+      'level': 'DEBUG',
+    },
+    'hydra': {
+      'level': 'DEBUG',   # Skip logging unless --debug and --verbose flags are set
+    },
+    'hydra.HydraClient': {
+      'level': 'DEBUG',   # Skip logging unless --debug and --verbose flags are set
+    },
+  }
+}
 """
 This method creates files with random data in them using a single buffer
 """
@@ -132,14 +165,11 @@ class TestHydraServer(unittest.TestCase):
   @classmethod
   def tearDownClass(cls):
     #print("tearDownClass called")
-    try:
-      cls.server = None
-    except:
-      pass
     cls.rand_buffer = None
     cls = None
     
   def setupServer(self):
+    #svr = hydra.ServerProcess(args={'logger_cfg': LOGGER_CONFIG})
     svr = hydra.ServerProcess()
     return svr
     
@@ -148,6 +178,7 @@ class TestHydraServer(unittest.TestCase):
       'svr': '127.0.0.1',
       'port': 8101,
       'file_handler': HydraTestClass,
+      #'logger_cfg': LOGGER_CONFIG,
       #'logger_cfg': {
       #  'host': ,
       #  'port': ,
@@ -212,6 +243,10 @@ class TestHydraServer(unittest.TestCase):
     except:
       svr.terminate()
       raise
+    for c in clients:
+      if c.is_alive():
+        c.join(10)
+        self.assertFalse(c.is_alive())
       
   #@unittest.skip("")
   def test_4_single_client_single_dir(self):
@@ -269,6 +304,10 @@ class TestHydraServer(unittest.TestCase):
     except:
       svr.terminate()
       raise
+    for c in clients:
+      if c.is_alive():
+        c.join(10)
+        self.assertFalse(c.is_alive())
 
   #@unittest.skip("")
   def test_5_multiple_client_2_worker_multiple_dir(self):
@@ -329,6 +368,10 @@ class TestHydraServer(unittest.TestCase):
     except:
       svr.terminate()
       raise
+    for c in clients:
+      if c.is_alive():
+        c.join(10)
+        self.assertFalse(c.is_alive())
 
   #@unittest.skip("")
   def test_6_multiple_client_8_worker_large_dir(self):
@@ -401,6 +444,10 @@ class TestHydraServer(unittest.TestCase):
     except:
       svr.terminate()
       raise
+    for c in clients:
+      if c.is_alive():
+        c.join(10)
+        self.assertFalse(c.is_alive())
 
 if __name__ == '__main__':
   debug_count = sys.argv.count('--debug')
