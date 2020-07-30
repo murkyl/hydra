@@ -30,7 +30,6 @@
 # Use ONEFS when running on cluster and SSH on Linux/UNIX clients
 SCRIPT_NAME="file_purge"
 TYPE=${TYPE-"SSH"}
-PROCESS_PATH=${PROCESS_PATH-"/some/path"}
 BASE_PATH=${BASE_PATH-"/scripts/path/${SCRIPT_NAME}"}
 LOG_PATH=${LOG_PATH-"/scripts/path/${SCRIPT_NAME}_logs"}
 CLIENT_OPTIONS=${CLIENT_OPTIONS-"-v -a ${LOG_PATH}/audit_$(hostname).log"}
@@ -66,14 +65,14 @@ Usage:
   $0 [start|cleanup] [options]
 
 Description:
-Please supply as the first argument one of the following options: cleanup|start
+Please supply as the first argument one of the following options: start|cleanup
 Specifying 'cleanup' will terminate any running instances. This is done
   automatically when running 'start'
 
 For start the syntax is:
-  $0 start <--date #> [--mtime|--atime|--ctime] [--purge]
+  $0 start <path> <--date #> [--mtime|--atime|--ctime] [--purge]
 
-The root path is coded into the script itself.
+The path option determines where the script will start processing.
 You can monitor the progress by 'tail'ing the server log file, connecting
 to the detatched screen session or by monitoring when the screen session
 terminates. When running 'screen -ls' to monitor progress, look for the
@@ -84,16 +83,14 @@ EOF
 function cleanup() {
   echo "Cleaning up old 'screen' sessions"
   if [[ "${TYPE}" == "ONEFS" ]]; then
-    isi_for_array -X screen -d -r exec_cmd_s -X quit &> /dev/null
-    isi_for_array -X screen -d -r exec_cmd -X quit &> /dev/null
+    isi_for_array -x `isi_nodes -L "%{lnn}"` -I -X "pkill -f \"python ${SCRIPT}\"" &> /dev/null
+    pkill -f "python ${SCRIPT}" &> /dev/null
   elif [[ "${TYPE}" == "SSH" ]]; then
     for c in ${CLIENTS}; do
       if [[ "${c}" == '127.0.0.1' ]] || [[ "${c}" == 'localhost' ]]; then
-        screen -d -r exec_cmd_s -X quit &> /dev/null
-        screen -d -r exec_cmd -X quit &> /dev/null
+        pkill -f "python ${SCRIPT}" &> /dev/null
       else
-        ssh ${c} screen -d -r exec_cmd -X quit &> /dev/null
-        ssh ${c} screen -d -r exec_cmd -X quit &> /dev/null
+        ssh ${c} pkill -f "python ${SCRIPT}"
       fi
     done
   fi
@@ -135,6 +132,12 @@ function check_params() {
     echo "Connect TYPE incorrect. Please change to one of: SSH | ONEFS"
     err=1
   fi
+  if [[ "$1" == "start" ]]; then
+    if [ ! -d "${2}" ]; then
+      echo "Start path does not exist: ${2}"
+      err=1
+    fi
+  fi
   if [ "${err}" == 1 ]; then
     exit 2
   fi
@@ -169,7 +172,8 @@ elif [ "$1" == "cleanup" ]; then
   exit 0
 elif [ "$1" == "start" ]; then
   cleanup
-  shift
+  PROCESS_PATH="${2}"
+  shift 2
   echo "Starting server with command: python ${SCRIPT} -s -p ${PROCESS_PATH} ${SERVER_LOG} ${SERVER_OPTIONS} $@"
   screen -d -m -S exec_cmd_s python ${SCRIPT} -s -p ${PROCESS_PATH} ${SERVER_LOG} ${SERVER_OPTIONS} $@
   # Give some time for the server to start up
