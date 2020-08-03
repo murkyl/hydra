@@ -338,9 +338,8 @@ class WorkerHandler(hydra.WorkerClass):
     with open(os.devnull, 'w') as devnull:
       try:
         raw_cmd = ' '.join(self.args['exec_cmd'])
-        self.log.critical("DEBUG: RAW: %s"%raw_cmd)
         cmd = raw_cmd.replace('{}', dir)
-        self.log.critical("DEBUG: SUBST: %s"%cmd)
+        self.log.debug("Command to run: %s"%cmd)
         proc = subprocess.Popen(
           cmd,
           shell=True,
