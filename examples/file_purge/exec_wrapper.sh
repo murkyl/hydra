@@ -175,7 +175,7 @@ elif [ "$1" == "start" ]; then
   PROCESS_PATH="${2}"
   shift 2
   echo "Starting server with command: python ${SCRIPT} -s -p ${PROCESS_PATH} ${SERVER_LOG} ${SERVER_OPTIONS} $@"
-  screen -d -m -S exec_cmd_s python ${SCRIPT} -s -p ${PROCESS_PATH} ${SERVER_LOG} ${SERVER_OPTIONS} $@
+  screen -d -m -S exec_cmd_s python ${SCRIPT} -s -p ${PROCESS_PATH} ${SERVER_LOG} ${SERVER_OPTIONS} -- $@
   # Give some time for the server to start up
   sleep 2
   start_clients
