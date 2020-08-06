@@ -62,7 +62,7 @@ SERVER_LOG=${SERVER_LOG-"-l ${LOG_PATH}/server.log"}
 
 read -r -d '' DESCRIPTION <<- EOF
 Usage:
-  $0 [start|cleanup] [options]
+  exec_wrapper.sh [start|cleanup] [options]
 
 Description:
 Please supply as the first argument one of the following options: start|cleanup
@@ -70,7 +70,7 @@ Specifying 'cleanup' will terminate any running instances. This is done
   automatically when running 'start'
 
 For start the syntax is:
-  $0 start <path> <cmd_to_run>
+  exec_wrapper.sh start <path> <cmd_to_run>
 
 The path option determines where the script will start processing.
 The cmd_to_run will be executed for each directory that is traversed. Very
@@ -80,15 +80,19 @@ include the * or glob operator.
 
 Note: On zsh, you need to escape the * on the command line. Bash does not
 require this escape.
+For any normally escaped character, it must be double escaped for the Python
+script to be able to execute in its own shell.
+
 
 Example:
-$0 start /start/path chown someuser {}/*
-$0 start /start/path chmod +a someuser user allow dir_gen_all {}/*
+exec_wrapper.sh start /start/path chown someuser {}/*
+exec_wrapper.sh start /start/path chmod +a user someuser allow dir_gen_all {}/*
+exec_wrapper.sh start /start/path chmod +a user domain\\\\user allow dir_gen_all {}/*
 # On ZSH
-$0 start /start/path chmod +a someuser user allow dir_gen_all {}/\*
+exec_wrapper.sh start /start/path chmod +a user someuser allow dir_gen_all {}/\*
 
 Example of just modifying the directory:
-$0 start /start/path chown someuser {}
+exec_wrapper.sh start /start/path chown someuser {}
 
 Do not include any recursive options in the commands as the script provides
 this function.
@@ -164,10 +168,10 @@ function check_params() {
 }
 
 function start_clients() {
-  echo "Starting clients with command: bash ${BASE_PATH}/$0 client ${SVR_IP}"
+  echo "Starting clients with command: bash ${BASE_PATH}/exec_wrapper.sh client ${SVR_IP}"
   if [[ "${TYPE}" == "ONEFS" ]]; then
     isi_for_array -X \
-        screen -d -m -S exec_cmd bash "${BASE_PATH}/$0 client ${SVR_IP}"
+        screen -d -m -S exec_cmd bash "${BASE_PATH}/exec_wrapper.sh client ${SVR_IP}"
   elif [[ "${TYPE}" == "SSH" ]]; then
     for c in ${CLIENTS}; do
       if [[ "${c}" == '127.0.0.1' ]] || [[ "${c}" == 'localhost' ]]; then
@@ -175,10 +179,10 @@ function start_clients() {
         # The extra 'exec bash' is a workaround for a permission denied error
         #   when trying to run on the local machine and the script file does
         #   not have the execute bit enabled
-        screen -d -m -S exec_cmd bash -c "exec bash ${BASE_PATH}/$0 client ${SVR_IP}" &
+        screen -d -m -S exec_cmd bash -c "exec bash ${BASE_PATH}/exec_wrapper.sh client ${SVR_IP}" &
       else
         echo "Starting remote client: ${c}"
-        ssh ${c} screen -d -m -S exec_cmd bash "${BASE_PATH}/$0 client ${SVR_IP}" &
+        ssh ${c} screen -d -m -S exec_cmd bash "${BASE_PATH}/exec_wrapper.sh client ${SVR_IP}" &
       fi
     done
   fi
