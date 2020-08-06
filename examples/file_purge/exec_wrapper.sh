@@ -62,7 +62,7 @@ SERVER_LOG=${SERVER_LOG-"-l ${LOG_PATH}/server.log"}
 
 read -r -d '' DESCRIPTION <<- EOF
 Usage:
-  $0 [start|cleanup] [options]
+  exec_wrapper.sh [start|cleanup] [options]
 
 Description:
 Please supply as the first argument one of the following options: start|cleanup
@@ -70,7 +70,7 @@ Specifying 'cleanup' will terminate any running instances. This is done
   automatically when running 'start'
 
 For start the syntax is:
-  $0 start <path> <--date #> [--mtime|--atime|--ctime] [--purge]
+  exec_wrapper.sh start <path> <--date #> [--mtime|--atime|--ctime] [--purge]
 
 The path option determines where the script will start processing.
 You can monitor the progress by 'tail'ing the server log file, connecting
@@ -144,10 +144,10 @@ function check_params() {
 }
 
 function start_clients() {
-  echo "Starting clients with command: bash ${BASE_PATH}/$0 client ${SVR_IP}"
+  echo "Starting clients with command: bash ${BASE_PATH}/exec_wrapper.sh client ${SVR_IP}"
   if [[ "${TYPE}" == "ONEFS" ]]; then
     isi_for_array -X \
-        screen -d -m -S exec_cmd bash "${BASE_PATH}/$0 client ${SVR_IP}"
+        screen -d -m -S exec_cmd bash "${BASE_PATH}/exec_wrapper.sh client ${SVR_IP}"
   elif [[ "${TYPE}" == "SSH" ]]; then
     for c in ${CLIENTS}; do
       if [[ "${c}" == '127.0.0.1' ]] || [[ "${c}" == 'localhost' ]]; then
@@ -155,10 +155,10 @@ function start_clients() {
         # The extra 'exec bash' is a workaround for a permission denied error
         #   when trying to run on the local machine and the script file does
         #   not have the execute bit enabled
-        screen -d -m -S exec_cmd bash -c "exec bash ${BASE_PATH}/$0 client ${SVR_IP}" &
+        screen -d -m -S exec_cmd bash -c "exec bash ${BASE_PATH}/exec_wrapper.sh client ${SVR_IP}" &
       else
         echo "Starting remote client: ${c}"
-        ssh ${c} screen -d -m -S exec_cmd bash "${BASE_PATH}/$0 client ${SVR_IP}" &
+        ssh ${c} screen -d -m -S exec_cmd bash "${BASE_PATH}/exec_wrapper.sh client ${SVR_IP}" &
       fi
     done
   fi
