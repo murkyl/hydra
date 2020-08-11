@@ -38,6 +38,7 @@ import logging
 import socket
 import select
 import optparse
+from stat import S_IFDIR, S_IFLNK, S_IFREG
 try:
   import hydra
 except:
@@ -87,16 +88,38 @@ from HistogramStat import RankItemsByKey
 from HistogramStat import get_file_category
 # Try to import Windows libraries to get SID
 try:
+  import win32file
   import win32api
   import win32con
   import win32security
-  GET_FILE_OWNER = lambda filename, stats:win32security.GetFileSecurity(filename, win32security.OWNER_SECURITY_INFORMATION).GetSecurityDescriptorOwner()
+  GET_FILE_OWNER = lambda filename, stats:win32security.GetFileSecurity("\\\\?\\%s"%filename, win32security.OWNER_SECURITY_INFORMATION).GetSecurityDescriptorOwner()
   GET_FILE_SID = lambda owner: str(owner)
 except:
   if os.name == 'nt':
     print("Unable to import Windows libraries. Have you installed them with 'pip install pywin32'?")
   GET_FILE_OWNER = lambda filename, stats: stats.st_uid
   GET_FILE_SID = lambda owner: "UID:%s"%owner
+
+
+# Windows FILE_ATTRIBUTE constants for interpreting the
+# FIND_DATA.dwFileAttributes member
+FILE_ATTRIBUTE_ARCHIVE = 32
+FILE_ATTRIBUTE_COMPRESSED = 2048
+FILE_ATTRIBUTE_DEVICE = 64
+FILE_ATTRIBUTE_DIRECTORY = 16
+FILE_ATTRIBUTE_ENCRYPTED = 16384
+FILE_ATTRIBUTE_HIDDEN = 2
+FILE_ATTRIBUTE_INTEGRITY_STREAM = 32768
+FILE_ATTRIBUTE_NORMAL = 128
+FILE_ATTRIBUTE_NOT_CONTENT_INDEXED = 8192
+FILE_ATTRIBUTE_NO_SCRUB_DATA = 131072
+FILE_ATTRIBUTE_OFFLINE = 4096
+FILE_ATTRIBUTE_READONLY = 1
+FILE_ATTRIBUTE_REPARSE_POINT = 1024
+FILE_ATTRIBUTE_SPARSE_FILE = 512
+FILE_ATTRIBUTE_SYSTEM = 4
+FILE_ATTRIBUTE_TEMPORARY = 256
+FILE_ATTRIBUTE_VIRTUAL = 65536
 
 
 FILE_SIZE_HISTOGRAM = [ # File size histogram table to see how many files fall within each size range
@@ -275,13 +298,6 @@ LOGGER_CONFIG = {
       'filename': '',
       'backupCount': 5,
     },
-    'audit': {
-      'formatter': 'simple',
-      'class': 'logging.handlers.RotatingFileHandler',
-      'delay': True,
-      'filename': '',
-      'backupCount': 5,
-    },
     'stats': {
       'formatter': 'stats',
       'class': 'logging.StreamHandler',
@@ -295,9 +311,6 @@ LOGGER_CONFIG = {
     },
     'hydra': {
       'level': 100,   # Skip logging unless --debug and --verbose flags are set
-    },
-    'audit': {
-      'level': 'INFO',
     },
     'stats': {
       'handlers': ['stats'],
@@ -329,20 +342,12 @@ def ConfigureLogging(options):
   if options.log:
     LOGGER_CONFIG['loggers']['']['handlers'] = ['file']
     LOGGER_CONFIG['handlers']['file']['filename'] = options.log
-  if options.audit:
-    LOGGER_CONFIG['loggers']['audit']['handlers'] = ['audit']
-    LOGGER_CONFIG['handlers']['audit']['filename'] = options.audit
   logging.config.dictConfig(LOGGER_CONFIG)
   log = logging.getLogger()
   # Perform log rollover after logging system is initialized
   if options.log:
     try:
       log.handlers[0].doRollover()
-    except:
-      pass
-  if options.audit:
-    try:
-      logging.getLogger('audit').handlers[0].doRollover()
     except:
       pass
   return log
@@ -485,46 +490,101 @@ def AddParserOptions(parser, raw_cli):
                         " Use --verbose in conjunction with --debug to turn on sub module debugging.")
   parser.add_option_group(op_group)
 
-def incr_per_depth(data_array, index, val):
+def windows_get_file_stat(full_path_file):
+  try:
+    win_attr = win32file.GetFileAttributesExW("\\\\?\\%s"%full_path_file)
+    # GetFileAttributesExW values:
+    #   FileAttributes (int)
+    #   CreationTime (datetime)
+    #   LastAccessTime (datetime)
+    #   LastWriteTime (datetime)
+    #   File Size (int/bytes)
+    st_mode = 0
+    attributes = win_attr[0]
+    if attributes & FILE_ATTRIBUTE_DIRECTORY:
+        st_mode |= S_IFDIR | 0o111
+    else:
+        st_mode |= S_IFREG
+    if attributes & FILE_ATTRIBUTE_READONLY:
+        st_mode |= 0o444
+    else:
+        st_mode |= 0o666
+    if (attributes & FILE_ATTRIBUTE_REPARSE_POINT and data.dwReserved0 == IO_REPARSE_TAG_SYMLINK):
+        st_mode ^= st_mode & 0o170000
+        st_mode |= S_IFLNK        
+    file_lstats = os.stat_result(
+      (
+        st_mode, # st_mode
+        0, # st_ino
+        0, # st_dev
+        0, # st_nlink
+        0, # st_uid
+        0, # st_gid
+        win_attr[4], # st_size
+        int(win_attr[2].timestamp()), # st_atime
+        int(win_attr[3].timestamp()), # st_mtime
+        int(win_attr[1].timestamp()), # st_ctime
+      ),
+      {
+        'st_atime_ns': win_attr[2].timestamp()*1000000000,
+        'st_mtime_ns': win_attr[3].timestamp()*1000000000,
+        'st_ctime_ns': win_attr[1].timestamp()*1000000000,
+        'st_file_attributes': win_attr[0],
+      }
+    )
+    return file_lstats
+  except WindowsError as e:
+    if e.winerror == 3 and len(full_path_file) > hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH:
+      return Exception('Unable to stat file due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH)
+    else:
+      if hydra.is_invalid_windows_filename(file):
+        return Exception('File contains invalid characters or invalid names for Windows: %s'%full_path_file)
+      return Exception(e)
+  except Exception as e:
+    return(e)
+  return Exception()
+
+
+def incr_per_depth(data_array, index, val, grow_size=DEFAULT_CONFIG['extend_stat_array_incr']):
   try:
     data_array[index] += val
   except IndexError as e:
     extension = (index - len(data_array) + 1)
-    if extension < self.args['extend_stat_array_incr']:
-      extension = self.args['extend_stat_array_incr']
+    if extension < grow_size:
+      extension = grow_size
     data_array.extend([0]*extension)
     data_array[index] += val
 
-def max_per_depth(data_array, index, val):
+def max_per_depth(data_array, index, val, grow_size=DEFAULT_CONFIG['extend_stat_array_incr']):
   try:
     cur_val = data_array[index]
   except IndexError as e:
     extension = (index - len(data_array) + 1)
-    if extension < self.args['extend_stat_array_incr']:
-      extension = self.args['extend_stat_array_incr']
+    if extension < grow_size:
+      extension = grow_size
     data_array.extend([0]*extension)
     cur_val = data_array[index]
   if val > cur_val:
     data_array[index] = val
     
-def add_to_per_depth(mutable, newdata):
+def add_to_per_depth(mutable, newdata, grow_size=DEFAULT_CONFIG['extend_stat_array_incr']):
   l1 = len(mutable)
   l2 = len(newdata)
   if l1 < l2:
     extension = l2 - l1
-    if extension < self.args['extend_stat_array_incr']:
-      extension = self.args['extend_stat_array_incr']
+    if extension < grow_size:
+      extension = grow_size
     mutable.extend([0]*extension)
   for i in range(len(newdata)):
     mutable[i] += newdata[i]
 
-def max_to_per_depth(mutable, newdata):
+def max_to_per_depth(mutable, newdata, grow_size=DEFAULT_CONFIG['extend_stat_array_incr']):
   l1 = len(mutable)
   l2 = len(newdata)
   if l1 < l2:
     extension = l2 - l1
-    if extension < self.args['extend_stat_array_incr']:
-      extension = self.args['extend_stat_array_incr']
+    if extension < grow_size:
+      extension = grow_size
     mutable.extend([0]*extension)
   for i in range(len(newdata)):
     if newdata[i] > mutable[i]:
@@ -758,15 +818,17 @@ class WorkerHandler(hydra.WorkerClass):
     try:
       file_lstats = os.lstat(full_path_file)
     except WindowsError as e:
-      if e.winerror == 3 and len(full_path_file) > hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH:
-        self.log.error('Unable to stat file due to path length > %d characters. Try setting HKLM\System\CurrentControlSet\Control\FileSystem\LongPathsEnabled to 1'%hydra.Utils.MAX_WINDOWS_FILEPATH_LENGTH)
-      else:
-        if hydra.is_invalid_windows_filename(file):
-          self.log.error('File contains invalid characters or invalid names for Windows: %s'%full_path_file)
-        else:
-          self.log.exception(e)
-      self.stats['error_stat_files'] += 1
-      return False
+      # On Windows try using the \\?\ path format as a fall back if os.lstat fails
+      try:
+        file_lstats = windows_get_file_stat(full_path_file)
+        if not isinstance(file_lstats, os.stat_result):
+          self.log.exception(file_lstats)
+          self.stats['error_stat_files'] += 1
+          return False
+      except Exception as e:
+        self.log.exception(e)
+        return False
+      # End Windows specific handling
     except Exception as e:
       self.stats['error_stat_files'] += 1
       return False
