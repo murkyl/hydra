@@ -492,13 +492,28 @@ def AddParserOptions(parser, raw_cli):
 
 def windows_get_file_stat(full_path_file):
   try:
-    win_attr = win32file.GetFileAttributesExW("\\\\?\\%s"%full_path_file)
-    # GetFileAttributesExW values:
-    #   FileAttributes (int)
-    #   CreationTime (datetime)
-    #   LastAccessTime (datetime)
-    #   LastWriteTime (datetime)
-    #   File Size (int/bytes)
+    handle = win32file.CreateFile(
+      "\\\\?\\%s"%full_path_file,
+      win32con.GENERIC_READ,
+      win32con.FILE_SHARE_READ,
+      None,
+      win32con.OPEN_EXISTING,
+      win32con.FILE_ATTRIBUTE_NORMAL,
+      None
+    )
+    win_attr = win32file.GetFileInformationByHandle(handle)
+    '''
+    [0] int : dwFileAttributes
+    [1] PyTime : ftCreationTime
+    [2] PyTime : ftLastAccessTime
+    [3] PyTime : ftLastWriteTime
+    [4] int : dwVolumeSerialNumber
+    [5] int : nFileSizeHigh
+    [6] int : nFileSizeLow
+    [7] int : nNumberOfLinks
+    [8] int : nFileIndexHigh
+    [9] int : nFileIndexLow
+    '''
     st_mode = 0
     attributes = win_attr[0]
     if attributes & FILE_ATTRIBUTE_DIRECTORY:
@@ -511,16 +526,18 @@ def windows_get_file_stat(full_path_file):
         st_mode |= 0o666
     if (attributes & FILE_ATTRIBUTE_REPARSE_POINT and data.dwReserved0 == IO_REPARSE_TAG_SYMLINK):
         st_mode ^= st_mode & 0o170000
-        st_mode |= S_IFLNK        
+        st_mode |= S_IFLNK
+    size = (win_attr[5] << 32) + win_attr[6]
+    inode = (win_attr[8] << 32) + win_attr[9]
     file_lstats = os.stat_result(
       (
         st_mode, # st_mode
-        0, # st_ino
+        inode, # st_ino
         0, # st_dev
-        0, # st_nlink
+        win_attr[7], # st_nlink
         0, # st_uid
         0, # st_gid
-        win_attr[4], # st_size
+        size, # st_size
         int(win_attr[2].timestamp()), # st_atime
         int(win_attr[3].timestamp()), # st_mtime
         int(win_attr[1].timestamp()), # st_ctime
