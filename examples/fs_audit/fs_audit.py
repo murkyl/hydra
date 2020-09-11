@@ -516,14 +516,8 @@ def windows_get_file_stat(full_path_file):
     '''
     st_mode = 0
     attributes = win_attr[0]
-    if attributes & FILE_ATTRIBUTE_DIRECTORY:
-        st_mode |= S_IFDIR | 0o111
-    else:
-        st_mode |= S_IFREG
-    if attributes & FILE_ATTRIBUTE_READONLY:
-        st_mode |= 0o444
-    else:
-        st_mode |= 0o666
+    st_mode |= (attributes & FILE_ATTRIBUTE_DIRECTORY)*(S_IFDIR | 0o111) | (!(attributes & FILE_ATTRIBUTE_DIRECTORY))*S_IFREG
+    st_mode |= (attributes & FILE_ATTRIBUTE_READONLY)*0o444 | (!(attributes & FILE_ATTRIBUTE_READONLY))*0o666
     if (attributes & FILE_ATTRIBUTE_REPARSE_POINT and data.dwReserved0 == IO_REPARSE_TAG_SYMLINK):
         st_mode ^= st_mode & 0o170000
         st_mode |= S_IFLNK
