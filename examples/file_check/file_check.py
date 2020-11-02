@@ -35,6 +35,7 @@ Description:
 import inspect
 import os
 import sys
+import re
 import multiprocessing
 import time
 import datetime
@@ -253,7 +254,25 @@ def AddParserOptions(parser, raw_cli):
   op_group.add_option("--check_encoding",
                     action="store_true",
                     default=DEFAULT_CONFIG['check_encoding'],
-                    help="Check character encoding of directories and files is UTF-8")
+                    help="Check character encoding of directories and files is UTF-8\nDefault: %default")
+  op_group.add_option("--check_file_name_length",
+                    action="store_true",
+                    default=DEFAULT_CONFIG['check_file_name_length'],
+                    help="Check if file name exceeds file_name_length bytes using UTF-8 encoding.\nDefault: %default")
+  op_group.add_option("--check_file_size",
+                    action="store_true",
+                    default=DEFAULT_CONFIG['check_file_size'],
+                    help="Check if file size exceeds file_size bytes.\nDefault: %default")
+  op_group.add_option("--file_name_length",
+                    action="store",
+                    type="int",
+                    default=DEFAULT_CONFIG['file_name_length'],
+                    help="Number of bytes after which a name is considered long.\nDefault: %default")
+  op_group.add_option("--file_size",
+                    action="store",
+                    type="int",
+                    default=DEFAULT_CONFIG['file_size'],
+                    help="Number of bytes after which a name is considered too large.\nDefault: %default")
   parser.add_option_group(op_group)
 
   op_group = optparse.OptionGroup(parser, "[Client] Tuning parameters")
@@ -370,7 +389,7 @@ class WorkerHandler(hydra.WorkerClass):
     if self.args['check_invalid_chars']:
       pass
     if self.args['check_file_name_length']:
-      if len(file) > self.args['file_name_length']:
+      if len(file.encode(self.args['encoding'])) > self.args['file_name_length']:
         self.stats['err_file_name_length'] += 1
         self.audit.info("Exceeded file name length: %s"%full_path_escaped)
     if self.args['check_path_name_length']:
@@ -503,6 +522,10 @@ def main():
     # Copy values from the options variables into the svr_args dictionary
     for op in [
           ('check_encoding', 'check_encoding'),
+          ('check_file_name_length', 'check_file_name_length'),
+          ('check_file_size', 'check_file_size'),
+          ('file_name_length', 'file_name_length'),
+          ('file_size', 'file_size'),
       ]:
       svr_args[op[0]] = getattr(options, op[1])
 
